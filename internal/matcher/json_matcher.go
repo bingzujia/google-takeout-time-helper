@@ -161,11 +161,11 @@ func truncationMatch(stem, ext string, nonJSON map[string]string) (string, bool)
 	if idx < 0 {
 		return "", false
 	}
-	closing := strings.Index(stem[idx:], ")")
-	if closing < 0 {
+	closingOffset := strings.Index(stem[idx:], ")")
+	if closingOffset < 0 {
 		return "", false
 	}
-	numStr := stem[idx+1 : idx+closing]
+	numStr := stem[idx+1 : idx+closingOffset]
 	if _, err := strconv.Atoi(numStr); err != nil {
 		return "", false
 	}
