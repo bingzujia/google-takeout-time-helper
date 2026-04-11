@@ -49,3 +49,18 @@ func CopyAndHash(src, destDir string) (dstPath, sha256Hex string, exists bool, e
 
 	return dstPath, sha256Hex, false, nil
 }
+
+// HashFile computes the SHA-256 hex digest of the file at path.
+func HashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open: %w", err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}

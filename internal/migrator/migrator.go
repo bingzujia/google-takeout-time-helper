@@ -297,8 +297,8 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir string,
 		return
 	}
 
-	// Step 3e: Copy file to output (flat) and compute SHA-256 in single pass
-	dstPath, sha256, exists, err := CopyAndHash(entry.Path, outputDir)
+	// Step 3e: Copy file to output (flat); SHA-256 will be recomputed after all mutations.
+	dstPath, _, exists, err := CopyAndHash(entry.Path, outputDir)
 	if err != nil {
 		mu.Lock()
 		stats.FailedOther++
@@ -337,11 +337,22 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir string,
 	// Restore original filename before metadata
 	cleanupRename()
 
-	// Step 3f: Write metadata JSON
+	// Step 3h: Recompute SHA-256 on the final output file (after exiftool mutation).
+	finalSHA256, err := HashFile(dstPath)
+	if err != nil {
+		mu.Lock()
+		stats.FailedOther++
+		logger.Fail("hash_error", entry.RelPath, err.Error())
+		mu.Unlock()
+		moveToErrorByPath(dstPath, entry.RelPath, outputDir, jsonResult)
+		return
+	}
+
+	// Step 3i: Write metadata JSON
 	meta := &Metadata{
 		OriginalPath:   entry.RelPath,
 		OutputFilename: filepath.Base(dstPath),
-		SHA256:         sha256,
+		SHA256:         finalSHA256,
 		Timestamp: TSInfo{
 			Final:  timeStr(finalTimestamp),
 			Source: timestampSource,
