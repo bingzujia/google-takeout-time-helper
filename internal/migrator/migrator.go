@@ -2,6 +2,7 @@ package migrator
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -427,43 +428,59 @@ func handleTypeMismatch(dstPath string, entry FileEntry, outputDir string,
 	return tmpPath, cleanup, nil
 }
 
-// moveToError moves the source file and its JSON sidecar to the error directory.
+// copyToPath copies src to dst using streaming io.Copy, leaving src untouched.
+func copyToPath(src, dst string) error {
+	srcF, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcF.Close()
+
+	dstF, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer dstF.Close()
+
+	_, err = io.Copy(dstF, srcF)
+	return err
+}
+
+// moveToError copies the source file and its JSON sidecar into the error
+// directory without removing them from the input tree (input stays read-only).
 func moveToError(entry FileEntry, outputDir string, jsonResult *matcher.JSONLookupResult) {
 	errorDir := filepath.Join(outputDir, "error", filepath.Dir(entry.RelPath))
 	if err := os.MkdirAll(errorDir, 0755); err != nil {
 		return
 	}
 
-	// Move source file
+	// Copy source file into error dir (do not rename out of input tree)
 	dstError := filepath.Join(errorDir, filepath.Base(entry.Path))
-	os.Rename(entry.Path, dstError)
+	copyToPath(entry.Path, dstError)
 
-	// Move JSON sidecar if exists
+	// Copy JSON sidecar if exists (do not rename out of input tree)
 	if jsonResult != nil {
-		jsonDir := filepath.Dir(jsonResult.JSONFile)
-		jsonName := filepath.Base(jsonResult.JSONFile)
-		jsonError := filepath.Join(errorDir, jsonName)
-		os.Rename(filepath.Join(jsonDir, jsonName), jsonError)
+		jsonError := filepath.Join(errorDir, filepath.Base(jsonResult.JSONFile))
+		copyToPath(jsonResult.JSONFile, jsonError)
 	}
 }
 
-// moveToErrorByPath moves an already-copied file from outputDir to error directory.
+// moveToErrorByPath moves an already-copied file from outputDir to error directory
+// and copies the JSON sidecar from the input tree (without removing it from input).
 func moveToErrorByPath(srcPath, relPath, outputDir string, jsonResult *matcher.JSONLookupResult) {
 	errorDir := filepath.Join(outputDir, "error", filepath.Dir(relPath))
 	if err := os.MkdirAll(errorDir, 0755); err != nil {
 		return
 	}
 
-	// Move the file from output to error
+	// Move the file from output to error (both are inside outputDir, rename is safe)
 	dstError := filepath.Join(errorDir, filepath.Base(srcPath))
 	os.Rename(srcPath, dstError)
 
-	// Move JSON sidecar if exists
+	// Copy JSON sidecar from input tree into error dir (do not rename out of input tree)
 	if jsonResult != nil {
-		jsonDir := filepath.Dir(jsonResult.JSONFile)
-		jsonName := filepath.Base(jsonResult.JSONFile)
-		jsonError := filepath.Join(errorDir, jsonName)
-		os.Rename(filepath.Join(jsonDir, jsonName), jsonError)
+		jsonError := filepath.Join(errorDir, filepath.Base(jsonResult.JSONFile))
+		copyToPath(jsonResult.JSONFile, jsonError)
 	}
 }
 
