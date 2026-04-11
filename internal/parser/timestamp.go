@@ -10,75 +10,83 @@ import (
 
 // pattern groups all timestamp-parsing rules in priority order.
 type pattern struct {
-	re   *regexp.Regexp
+	re    *regexp.Regexp
 	parse func(m []string) (time.Time, bool)
 }
 
 var loc = time.UTC
 
 var patterns = []pattern{
-	// 1. IMG_20230302_112040  (8-digit date _ 6-digit time)
+	// 1. IMG20250409084814 / VID20250409084814 (anchored, IMG/VID prefix)
 	{
-		re: regexp.MustCompile(`(?i)(?:IMG|VID|WP|P|PXL|DSC|MVIMG|PANO|BURST)_(\d{8})_(\d{6})`),
+		re: regexp.MustCompile(`(?i)^(?:IMG|VID)(\d{8})(\d{6})`),
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
 	},
-	// 2. IMG20230123102606 (8-digit date concat 6-digit time, no separator)
+	// 2. IMG_20250727_141938 / VID_20250727_141938 (anchored, IMG/VID prefix)
 	{
-		re: regexp.MustCompile(`(?i)(?:IMG|VID|MVIMG|PANO|BURST)(\d{8})(\d{6})`),
+		re: regexp.MustCompile(`(?i)^(?:IMG|VID)_(\d{8})_(\d{6})`),
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
 	},
-	// 3. WP_20131010_074  (8-digit date _ 3-6 digit time, zero-pad to 6)
+	// 3. (\d{8})_(\d{6}) — generic, anywhere in filename
 	{
-		re: regexp.MustCompile(`(?i)WP_(\d{8})_(\d{3,6})`),
+		re: regexp.MustCompile(`(\d{8})_(\d{6})`),
+		parse: func(m []string) (time.Time, bool) {
+			return parseDateTime8_6(m[1], m[2])
+		},
+	},
+	// 4. (\d{8})(\d{6}) — 14 consecutive digits at filename start
+	{
+		re: regexp.MustCompile(`^(\d{8})(\d{6})`),
+		parse: func(m []string) (time.Time, bool) {
+			return parseDateTime8_6(m[1], m[2])
+		},
+	},
+	// 5. (\d{8})_(\d{3,6}) — WP short time, default to 12:00:00 when < 6 digits
+	{
+		re: regexp.MustCompile(`(\d{8})_(\d{3,6})`),
 		parse: func(m []string) (time.Time, bool) {
 			timeStr := m[2]
-			for len(timeStr) < 6 {
-				timeStr += "0"
+			if len(timeStr) < 6 {
+				// Time part is incomplete, default to 12:00:00
+				return parseDateTime8_6(m[1], "120000")
 			}
 			return parseDateTime8_6(m[1], timeStr)
 		},
 	},
-	// 6. Screenshot_2016-02-28-13-06-34 (YYYY-MM-DD-HH-mm-ss)
+	// 6. (\d{8})_(\d{6})~\d+ — burst photos with ~N suffix
 	{
-		re: regexp.MustCompile(`(?i)Screenshot_(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})`),
+		re: regexp.MustCompile(`(\d{8})_(\d{6})~\d+`),
+		parse: func(m []string) (time.Time, bool) {
+			return parseDateTime8_6(m[1], m[2])
+		},
+	},
+	// 7. (\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2}) — YYYY-MM-DD-HH-mm-ss
+	{
+		re: regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})`),
 		parse: func(m []string) (time.Time, bool) {
 			return parseComponents(m[1], m[2], m[3], m[4], m[5], m[6])
 		},
 	},
-	// 7. Screenshot_20210803-084525 (YYYYMMDD-HHmmss)
+	// 8. (\d{8})-(\d{6}) — YYYYMMDD-HHmmss
 	{
-		re: regexp.MustCompile(`(?i)Screenshot_(\d{8})-(\d{6})`),
+		re: regexp.MustCompile(`(\d{8})-(\d{6})`),
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
 	},
-	// 8/9/10. mmexport<13-digit-unix-ms>[(-suffix)|((N))]
+	// 9/10/11. mmexport<13-digit-unix-ms>[(-suffix)|((N))]
 	{
-		re: regexp.MustCompile(`(?i)mmexport(\d{10})\d{0,3}(?:[(-].*)?`),
+		re: regexp.MustCompile(`(?i)mmexport(\d{13})(?:[(-].*)?`),
 		parse: func(m []string) (time.Time, bool) {
-			sec, err := strconv.ParseInt(m[1], 10, 64)
+			sec, err := strconv.ParseInt(m[1][:10], 10, 64)
 			if err != nil {
 				return time.Time{}, false
 			}
 			return time.Unix(sec, 0).UTC(), true
-		},
-	},
-	// 5. 20151120_120004~2  (must come before pattern 4)
-	{
-		re: regexp.MustCompile(`^(\d{8})_(\d{6})~\d+`),
-		parse: func(m []string) (time.Time, bool) {
-			return parseDateTime8_6(m[1], m[2])
-		},
-	},
-	// 4. 20151120_120004
-	{
-		re: regexp.MustCompile(`^(\d{8})_(\d{6})`),
-		parse: func(m []string) (time.Time, bool) {
-			return parseDateTime8_6(m[1], m[2])
 		},
 	},
 }
@@ -111,6 +119,29 @@ func parseComponents(year, month, day, hour, min, sec string) (time.Time, bool) 
 		}
 		vals[i] = v
 	}
+
+	// Reject obviously invalid dates before Go normalizes them.
+	// Go's time.Date(2025, 13, 45, ...) silently rolls over to a valid date,
+	// which produces wrong results for false-positive regex matches.
+	if vals[0] < 1980 || vals[0] > 2100 {
+		return time.Time{}, false
+	}
+	if vals[1] < 1 || vals[1] > 12 {
+		return time.Time{}, false
+	}
+	if vals[2] < 1 || vals[2] > 31 {
+		return time.Time{}, false
+	}
+	if vals[3] > 23 || vals[4] > 59 || vals[5] > 59 {
+		return time.Time{}, false
+	}
+
 	t := time.Date(vals[0], time.Month(vals[1]), vals[2], vals[3], vals[4], vals[5], 0, loc)
+	// Double-check: Go may still normalize (e.g. Feb 30 → Mar 2).
+	// If the components changed, the date was invalid.
+	if t.Year() != vals[0] || int(t.Month()) != vals[1] || t.Day() != vals[2] ||
+		t.Hour() != vals[3] || t.Minute() != vals[4] || t.Second() != vals[5] {
+		return time.Time{}, false
+	}
 	return t, true
 }
