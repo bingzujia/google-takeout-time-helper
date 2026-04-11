@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bingzujia/g_photo_take_out_helper/internal/matcher"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/metadata"
@@ -24,7 +25,7 @@ func init() {
 	fixTakeoutCmd.Flags().BoolVar(&fixTakeoutDryRun, "dry-run", false, "preview only")
 }
 
-func runFixTakeout(cmd *cobra.Command, args []string) error {
+func runFixTakeout(_ *cobra.Command, _ []string) error {
 	// Find all "Photos from*" subdirs
 	entries, err := os.ReadDir(fixTakeoutDir)
 	if err != nil {
@@ -34,7 +35,7 @@ func runFixTakeout(cmd *cobra.Command, args []string) error {
 	writer := metadata.NewWriter()
 
 	totalMatched := 0
-	totalUnmatched := 0
+	totalSkipped := 0
 
 	photoDirs := []string{}
 	for _, e := range entries {
@@ -50,47 +51,60 @@ func runFixTakeout(cmd *cobra.Command, args []string) error {
 
 	for _, photoDir := range photoDirs {
 		progress.Info("Processing %s", photoDir)
-		results, unmatched, err := matcher.MatchAll(photoDir)
+
+		// Collect all non-JSON files
+		dirEntries, err := os.ReadDir(photoDir)
 		if err != nil {
-			progress.Warning("Error scanning %s: %v", photoDir, err)
+			progress.Warning("Error reading %s: %v", photoDir, err)
 			continue
 		}
 
-		totalUnmatched += len(unmatched)
+		var photos []string
+		for _, e := range dirEntries {
+			if e.IsDir() {
+				continue
+			}
+			if !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
+				photos = append(photos, e.Name())
+			}
+		}
 
-		for i, mr := range results {
-			progress.PrintProgress(i+1, len(results))
+		for _, name := range photos {
+			photoPath := filepath.Join(photoDir, name)
+			jsonResult := matcher.JSONForFile(photoPath)
+			if jsonResult == nil {
+				totalSkipped++
+				continue
+			}
 
 			if fixTakeoutDryRun {
-				progress.Info("Would set %s → %v", mr.PhotoFile, mr.Timestamp)
+				progress.Info("Would set %s → %v", photoPath, jsonResult.Timestamp)
 				totalMatched++
 				continue
 			}
 
-			if mr.Timestamp.IsZero() {
-				progress.Warning("No timestamp for %s, skipping", mr.PhotoFile)
+			if jsonResult.Timestamp.IsZero() {
+				progress.Warning("No timestamp for %s, skipping", photoPath)
+				totalSkipped++
 				continue
 			}
 
-			if err := writer.WriteTimestamp(mr.PhotoFile, mr.Timestamp); err != nil {
-				progress.Error("WriteTimestamp %s: %v", mr.PhotoFile, err)
+			if err := writer.WriteTimestamp(photoPath, jsonResult.Timestamp); err != nil {
+				progress.Error("WriteTimestamp %s: %v", photoPath, err)
+				totalSkipped++
 				continue
 			}
 
-			if mr.Lat != 0 || mr.Lon != 0 {
-				if err := writer.WriteGPS(mr.PhotoFile, mr.Lat, mr.Lon, mr.Alt); err != nil {
-					progress.Warning("WriteGPS %s: %v", mr.PhotoFile, err)
+			if jsonResult.Lat != 0 || jsonResult.Lon != 0 {
+				if err := writer.WriteGPS(photoPath, jsonResult.Lat, jsonResult.Lon, jsonResult.Alt); err != nil {
+					progress.Warning("WriteGPS %s: %v", photoPath, err)
 				}
 			}
 
 			totalMatched++
 		}
-		// newline after progress bar
-		if len(results) > 0 {
-			println()
-		}
 	}
 
-	progress.Success("Done. Matched: %d, Unmatched JSON: %d", totalMatched, totalUnmatched)
+	progress.Success("Done. Matched: %d, Skipped: %d", totalMatched, totalSkipped)
 	return nil
 }
