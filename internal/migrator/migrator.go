@@ -131,11 +131,26 @@ func processFiles(entries []FileEntry, outputDir, metadataDir string,
 	}
 
 	var wg sync.WaitGroup
-	var mu sync.Mutex // protects logger
+	var mu sync.Mutex // protects logger and stats
 	var processed atomic.Int64
 	total := len(entries)
 
 	jobCh := make(chan FileEntry, workers)
+
+	// progCh serializes all progress updates through a single goroutine so that
+	// concurrent workers never interleave their \r-based progress output.
+	var progWg sync.WaitGroup
+	progCh := make(chan int, workers)
+	if showProgress && total > 0 {
+		progWg.Add(1)
+		go func() {
+			defer progWg.Done()
+			for cur := range progCh {
+				progress.PrintProgress(cur, total)
+			}
+			fmt.Println()
+		}()
+	}
 
 	// Start workers
 	for i := 0; i < workers; i++ {
@@ -144,9 +159,9 @@ func processFiles(entries []FileEntry, outputDir, metadataDir string,
 			defer wg.Done()
 			for entry := range jobCh {
 				processSingleFile(entry, outputDir, metadataDir, logger, exifWriter, stats, &mu)
-				cur := processed.Add(1)
-				if showProgress && shouldUpdate(int(cur), total) {
-					progress.PrintProgress(int(cur), total)
+				cur := int(processed.Add(1))
+				if showProgress && shouldUpdate(cur, total) {
+					progCh <- cur
 				}
 			}
 		}()
@@ -158,12 +173,10 @@ func processFiles(entries []FileEntry, outputDir, metadataDir string,
 	}
 	close(jobCh)
 
-	// Wait for completion
+	// Wait for workers then signal progress goroutine to exit.
 	wg.Wait()
-
-	if showProgress && len(entries) > 0 {
-		fmt.Println()
-	}
+	close(progCh)
+	progWg.Wait()
 }
 
 // shouldUpdate determines whether to refresh the progress bar.
