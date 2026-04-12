@@ -81,7 +81,7 @@ func ParseEXIFAll(filePath string) (*EXIFInfo, error) {
 				info.TimestampOk = true
 			}
 		}
-		// GPS is valid if both lat and lon are non-zero
+		// GPS is valid if at least one of lat/lon is non-zero
 		if r.GPSLatitude != 0 || r.GPSLongitude != 0 {
 			info.Latitude = r.GPSLatitude
 			info.Longitude = r.GPSLongitude

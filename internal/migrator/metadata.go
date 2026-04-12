@@ -17,6 +17,7 @@ type Metadata struct {
 	GPS            *GPSInfo   `json:"gps,omitempty"`
 	DeviceFolder   string     `json:"device_folder,omitempty"`
 	DeviceType     string     `json:"device_type,omitempty"`
+	ReviewReason   string     `json:"review_reason,omitempty"` // set when file needs manual attention
 }
 
 // TSInfo holds timestamp data from all sources.
