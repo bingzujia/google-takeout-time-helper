@@ -13,7 +13,9 @@ func TestParseEXIFTimestamp(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	txtFile := filepath.Join(tmpDir, "test.txt")
-	os.WriteFile(txtFile, []byte("not an image"), 0644)
+	if err := os.WriteFile(txtFile, []byte("not an image"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	_, ok := ParseEXIFTimestamp(txtFile)
 	if ok {

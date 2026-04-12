@@ -21,7 +21,10 @@ SHA-256-based metadata JSON files.`,
 	RunE: runMigrate,
 }
 
+var migrateDryRun bool
+
 func init() {
+	migrateCmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "preview migration without modifying files")
 	rootCmd.AddCommand(migrateCmd)
 }
 
@@ -35,12 +38,19 @@ func runMigrate(_ *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Input:  %s\n", inputDir)
-	fmt.Printf("Output: %s\n\n", outputDir)
+	fmt.Printf("Output: %s\n", outputDir)
+
+	if migrateDryRun {
+		fmt.Println("\nDry-run mode — no files will be modified")
+	} else {
+		fmt.Println()
+	}
 
 	stats, err := migrator.Run(migrator.Config{
 		InputDir:     inputDir,
 		OutputDir:    outputDir,
-		ShowProgress: true,
+		ShowProgress: !migrateDryRun,
+		DryRun:       migrateDryRun,
 	})
 	if err != nil {
 		return err
@@ -48,14 +58,23 @@ func runMigrate(_ *cobra.Command, args []string) error {
 
 	// Print summary
 	fmt.Println()
-	fmt.Println("Processing complete!")
+	if migrateDryRun {
+		fmt.Println("Dry-run complete! (no files were modified)")
+	} else {
+		fmt.Println("Processing complete!")
+	}
 	fmt.Printf("  Scanned:            %d files\n", stats.Scanned)
 	fmt.Printf("  Processed:          %d files\n", stats.Processed)
 	fmt.Printf("  Skipped (no time):  %d files\n", stats.SkippedNoTime)
 	fmt.Printf("  Skipped (exists):   %d files\n", stats.SkippedExists)
 	fmt.Printf("  Failed (exiftool):  %d files\n", stats.FailedExif)
 	fmt.Printf("  Failed (other):     %d files\n", stats.FailedOther)
-	fmt.Printf("  Log:                %s/gtoh.log\n", outputDir)
+	fmt.Printf("  Manual review:      %d files\n", stats.ManualReview)
+	if migrateDryRun {
+		fmt.Println("  Log:                (not created in dry-run)")
+	} else {
+		fmt.Printf("  Log:                %s/gtoh.log\n", outputDir)
+	}
 
 	return nil
 }

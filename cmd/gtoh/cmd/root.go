@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 )
 
@@ -13,14 +15,10 @@ var rootCmd = &cobra.Command{
 // Execute runs the root command.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		// cobra already prints the error
+		os.Exit(1)
 	}
 }
 
 func init() {
-	rootCmd.AddCommand(fixTakeoutCmd)
-	rootCmd.AddCommand(fixImgCmd)
-	rootCmd.AddCommand(organizeCmd)
-	rootCmd.AddCommand(renameCmd)
-	rootCmd.AddCommand(cleanJSONCmd)
+	// migrateCmd self-registers in its own init()
 }

@@ -36,7 +36,7 @@ func DetectFileAll(filePath string) (*FileType, error) {
 	mimeType := strings.TrimSpace(string(out))
 	currentExt := strings.ToLower(filepath.Ext(filePath))
 	targetExt := mimeToExt(mimeType)
-	supported := mimeType != "video/x-ms-wmv"
+	supported := mimeType != "video/x-ms-wmv" && mimeType != "image/webp" && mimeType != "video/x-ms-asf"
 
 	var newExt string
 	if targetExt != "" && targetExt != currentExt {
