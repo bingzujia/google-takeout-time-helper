@@ -44,10 +44,11 @@ gtoh
 ├── fix-img       修复 IMG/VID 文件时间戳（从文件名提取）
 ├── organize      按类型整理照片到子目录
 ├── rename        按修改时间批量重命名
-└── clean-json    删除所有 JSON 附属文件
+├── clean-json    删除所有 JSON 附属文件
+└── migrate       迁移/转换旧版数据或目录结构
 ```
 
-所有命令均支持 `--dry-run` 参数，可在不修改任何文件的情况下预览将要执行的操作。
+`fix-takeout`、`fix-img`、`organize`、`rename` 和 `clean-json` 支持 `--dry-run` 参数，可在不修改任何文件的情况下预览将要执行的操作；`migrate` 当前不支持该参数。
 
 ---
 
