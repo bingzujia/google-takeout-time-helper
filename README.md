@@ -39,10 +39,12 @@ make build          # 产物：bin/gtoh
 ## 命令
 
 ```
-gtoh migrate <input_dir> <output_dir>
+gtoh migrate      <input_dir> <output_dir>   # 迁移 Google Takeout 照片
+gtoh classify     <input_dir> <output_dir>   # 按类型分类媒体文件
+gtoh fix-exif-dates --dir <dir>              # 同步 DateTimeOriginal → CreateDate & ModifyDate
 ```
 
-`gtoh` 专注于修复 Google Takeout 导出照片的时间戳。`migrate` 命令读取每张照片对应的 `.json` 元数据文件，结合 EXIF 和文件名提取真实拍摄时间，将文件拷贝到输出目录并写入 EXIF 元数据（需安装 `exiftool`）。
+`gtoh` 专注于修复 Google Takeout 导出照片的时间戳，并提供分类整理工具。各命令均支持 `--dry-run` 预览模式，不会实际修改文件（`fix-exif-dates` 使用 `--dry-run`）。所有写入 EXIF 元数据的命令均需安装 `exiftool`。
 
 ---
 
@@ -69,6 +71,7 @@ Takeout/
 
 ```bash
 gtoh migrate "/path/to/Takeout/Google Photos" "/path/to/output"
+gtoh migrate "/path/to/Takeout/Google Photos" "/path/to/output" --dry-run
 ```
 
 **预期输出**：
@@ -105,13 +108,74 @@ Processing complete!
 
 ---
 
+### `gtoh classify` — 按类型分类媒体文件
+
+**用途**：扫描 `input_dir` 一级子目录下的媒体文件，根据文件名规则或 EXIF 设备信息，将文件移动到 `output_dir` 的对应子目录中。
+
+| 目标目录 | 规则 |
+|----------|------|
+| `camera/` | 文件名匹配相机模式（`IMG_`、`VID_`、`PXL_` 等） |
+| `screenshot/` | 文件名包含 `screenshot` |
+| `wechat/` | 文件名以 `mmexport` 开头 |
+| `seemsCamera/` | 无文件名匹配，但 `exiftool` 检测到 EXIF Make/Model |
+
+不匹配任何规则的文件原地保留，计入 Skipped。
+
+**用法**：
+
+```bash
+gtoh classify "/path/to/input" "/path/to/output"
+gtoh classify "/path/to/input" "/path/to/output" --dry-run
+```
+
+**预期输出**：
+
+```
+Input:  /path/to/input
+Output: /path/to/output
+
+Classification complete!
+  Camera:       42 files
+  Screenshot:   15 files
+  WeChat:        8 files
+  SeemsCamera:   3 files
+  Skipped:       7 files
+```
+
+---
+
+### `gtoh fix-exif-dates` — 同步 EXIF 日期字段
+
+**用途**：读取目录下媒体文件的 `DateTimeOriginal` 字段，将相同的值写入 `CreateDate` 和 `ModifyDate`（通过 `exiftool` 批量处理，非递归，仅处理第一级文件）。
+
+**用法**：
+
+```bash
+gtoh fix-exif-dates --dir "/path/to/photos"
+gtoh fix-exif-dates --dir "/path/to/photos" --dry-run
+```
+
+**预期输出**：
+
+```
+Done. Processed: 38, Skipped: 2
+```
+
+---
+
 ## 推荐工作流
 
 处理一份新的 Google Takeout 导出：
 
 ```bash
-# 迁移照片（修复时间戳 + 拷贝到干净的输出目录）
+# 1. 迁移照片（修复时间戳 + 拷贝到干净的输出目录）
 gtoh migrate "Takeout/Google Photos" "output"
+
+# 2. （可选）补充同步 CreateDate / ModifyDate
+gtoh fix-exif-dates --dir "output"
+
+# 3. （可选）按类型整理分类
+gtoh classify "output" "sorted"
 ```
 
 ---

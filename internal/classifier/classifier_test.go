@@ -1,0 +1,213 @@
+package classifier
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// --- classifyFile tests (task 6.1) ---
+
+func TestClassifyFile_Camera(t *testing.T) {
+	cases := []string{
+		"IMG_20230401_120000.jpg",
+		"VID_20230401_120000.mp4",
+		"PXL_20230401_120000.jpg",
+		"IMG_001.jpeg",
+		"20230401_120000.jpg",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			cat, ok := classifyFile(name)
+			if !ok {
+				t.Fatalf("classifyFile(%q) returned ok=false, want true", name)
+			}
+			if cat != CategoryCamera {
+				t.Errorf("classifyFile(%q) = %q, want %q", name, cat, CategoryCamera)
+			}
+		})
+	}
+}
+
+func TestClassifyFile_Screenshot(t *testing.T) {
+	cases := []string{
+		"Screenshot_2023-04-01.png",
+		"screenshot_001.jpg",
+		"my_screenshot.png",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			cat, ok := classifyFile(name)
+			if !ok {
+				t.Fatalf("classifyFile(%q) returned ok=false, want true", name)
+			}
+			if cat != CategoryScreenshot {
+				t.Errorf("classifyFile(%q) = %q, want %q", name, cat, CategoryScreenshot)
+			}
+		})
+	}
+}
+
+func TestClassifyFile_Wechat(t *testing.T) {
+	cases := []string{
+		"mmexport1680000000000.jpg",
+		"mmexport1680000000000.mp4",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			cat, ok := classifyFile(name)
+			if !ok {
+				t.Fatalf("classifyFile(%q) returned ok=false, want true", name)
+			}
+			if cat != CategoryWechat {
+				t.Errorf("classifyFile(%q) = %q, want %q", name, cat, CategoryWechat)
+			}
+		})
+	}
+}
+
+func TestClassifyFile_NoMatch(t *testing.T) {
+	cases := []string{
+		"random_file.jpg",
+		"document.pdf",
+		"notes.txt",
+		"DCIM_photo.jpg", // not a recognised prefix
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, ok := classifyFile(name)
+			if ok {
+				t.Errorf("classifyFile(%q) returned ok=true, want false", name)
+			}
+		})
+	}
+}
+
+// --- exiftoolFallback tests (task 6.2) ---
+
+func TestExiftoolFallback_NonImageFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	txtFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(txtFile, []byte("not an image"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A plain text file should have no Make/Model → false.
+	// If exiftool is not installed this also returns false gracefully.
+	got, err := exiftoolFallback(txtFile)
+	if err != nil {
+		t.Fatalf("exiftoolFallback returned unexpected error: %v", err)
+	}
+	if got {
+		t.Error("exiftoolFallback returned true for a plain text file, want false")
+	}
+}
+
+func TestExiftoolFallback_NonExistentFile(t *testing.T) {
+	got, err := exiftoolFallback("/nonexistent/file.jpg")
+	if err != nil {
+		t.Fatalf("exiftoolFallback returned unexpected error: %v", err)
+	}
+	if got {
+		t.Error("exiftoolFallback returned true for a non-existent file, want false")
+	}
+}
+
+// --- Run integration test (task 6.3) ---
+
+func TestRun_Integration(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Input layout:
+	//   tmpDir/input/album1/IMG_20230401_120000.jpg   → camera
+	//   tmpDir/input/album1/Screenshot_001.png        → screenshot
+	//   tmpDir/input/album1/mmexport1234567890.jpg    → wechat
+	//   tmpDir/input/album1/random_file.jpg           → skipped (no exif, txt content)
+	//   tmpDir/input/root_file.jpg                    → ignored (root level, not in subdir)
+	inputDir := filepath.Join(tmpDir, "input")
+	album1 := filepath.Join(inputDir, "album1")
+	if err := os.MkdirAll(album1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	files := map[string]string{
+		"IMG_20230401_120000.jpg": "fake jpeg",
+		"Screenshot_001.png":     "fake png",
+		"mmexport1234567890.jpg": "fake wechat",
+		"random_file.jpg":        "fake random",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(album1, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Root-level file — should be ignored.
+	if err := os.WriteFile(filepath.Join(inputDir, "root.jpg"), []byte("root"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	outputDir := filepath.Join(tmpDir, "output")
+
+	result, err := Run(Config{InputDir: inputDir, OutputDir: outputDir, DryRun: false})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if result.Camera != 1 {
+		t.Errorf("Camera = %d, want 1", result.Camera)
+	}
+	if result.Screenshot != 1 {
+		t.Errorf("Screenshot = %d, want 1", result.Screenshot)
+	}
+	if result.Wechat != 1 {
+		t.Errorf("Wechat = %d, want 1", result.Wechat)
+	}
+	// random_file.jpg: no filename match; exiftool either skips gracefully or finds no device → Skipped.
+	// seemsCamera could be >0 if exiftool finds something (unlikely for fake content).
+	total := result.Camera + result.Screenshot + result.Wechat + result.SeemsCamera + result.Skipped
+	if total != 4 {
+		t.Errorf("total processed = %d, want 4", total)
+	}
+
+	// Verify files landed in the right directories.
+	assertExists(t, filepath.Join(outputDir, "camera", "IMG_20230401_120000.jpg"))
+	assertExists(t, filepath.Join(outputDir, "screenshot", "Screenshot_001.png"))
+	assertExists(t, filepath.Join(outputDir, "wechat", "mmexport1234567890.jpg"))
+
+	// Root-level file must still be at root — not touched.
+	assertExists(t, filepath.Join(inputDir, "root.jpg"))
+}
+
+func TestRun_DryRun(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputDir := filepath.Join(tmpDir, "input")
+	album1 := filepath.Join(inputDir, "album1")
+	if err := os.MkdirAll(album1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(album1, "IMG_001.jpg"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outputDir := filepath.Join(tmpDir, "output")
+
+	result, err := Run(Config{InputDir: inputDir, OutputDir: outputDir, DryRun: true})
+	if err != nil {
+		t.Fatalf("Run(DryRun) returned error: %v", err)
+	}
+	if result.Camera != 1 {
+		t.Errorf("DryRun Camera = %d, want 1", result.Camera)
+	}
+	// Output directory must NOT have been created in dry-run.
+	if _, err := os.Stat(outputDir); !os.IsNotExist(err) {
+		t.Error("output directory should not exist after dry-run")
+	}
+	// Source file must still exist.
+	assertExists(t, filepath.Join(album1, "IMG_001.jpg"))
+}
+
+func assertExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Errorf("expected file to exist: %s", path)
+	}
+}
