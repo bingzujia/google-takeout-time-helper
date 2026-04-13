@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
 	"github.com/spf13/cobra"
@@ -47,13 +48,10 @@ func init() {
 }
 
 func runFixExifDates(_ *cobra.Command, _ []string) error {
-	// Task 2.1: check exiftool in PATH
-	exiftoolPath, err := exec.LookPath("exiftool")
-	if err != nil {
+	if _, err := exec.LookPath("exiftool"); err != nil {
 		return fmt.Errorf("exiftool not found in PATH: install exiftool and retry")
 	}
 
-	// Task 2.2: read first-level directory entries, skip subdirs
 	entries, err := os.ReadDir(fixExifDatesDir)
 	if err != nil {
 		return fmt.Errorf("reading directory %q: %w", fixExifDatesDir, err)
@@ -66,7 +64,6 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 		if e.IsDir() {
 			continue
 		}
-		// Task 2.3: filter by media extension whitelist
 		ext := strings.ToLower(filepath.Ext(e.Name()))
 		if !mediaExts[ext] {
 			skipped++
@@ -77,44 +74,75 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 
 	if len(mediaFiles) == 0 {
 		progress.Info("No media files found in %q", fixExifDatesDir)
-		progress.Success("Done. Processed: 0, Skipped: %d", skipped)
+		progress.Success("Done. Processed: 0, Failed: 0, Skipped: %d", skipped)
 		return nil
 	}
 
-	// Task 2.4: dry-run mode — print what would be executed and exit
+	// Dry-run: read DateTimeOriginal per file and print it.
 	if fixExifDatesDryRun {
-		args := buildExiftoolArgs(mediaFiles)
-		progress.Info("Would run: %s %s", exiftoolPath, strings.Join(args, " "))
 		for _, f := range mediaFiles {
-			progress.Info("  %s", f)
+			dt := readDateTimeOriginal(f)
+			if dt == "" {
+				progress.Info("  %s  (no DateTimeOriginal)", f)
+			} else {
+				progress.Info("  %s  DateTimeOriginal=%s", f, dt)
+			}
 		}
 		progress.Success("Dry-run complete. Would process: %d, Skipped: %d", len(mediaFiles), skipped)
 		return nil
 	}
 
-	// Task 2.5: batch exiftool call
-	args := buildExiftoolArgs(mediaFiles)
-	cmd := exec.Command(exiftoolPath, args...)
-	out, err := cmd.CombinedOutput()
+	// Open log file for failures.
+	logPath := filepath.Join(fixExifDatesDir, "gtoh-fix-exif.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		progress.Error("exiftool error: %v\n%s", err, string(out))
-		return fmt.Errorf("exiftool failed: %w", err)
+		return fmt.Errorf("opening log file %q: %w", logPath, err)
 	}
-	if len(out) > 0 {
-		progress.Info("%s", strings.TrimSpace(string(out)))
+	defer logFile.Close()
+
+	writeLog := func(filePath, detail string) {
+		ts := time.Now().Format("2006-01-02 15:04:05")
+		fmt.Fprintf(logFile, "[%s] FAIL write: %s (%s)\n", ts, filePath, detail)
 	}
 
-	// Task 2.6: print summary
-	progress.Success("Done. Processed: %d, Skipped: %d", len(mediaFiles), skipped)
+	processed, failed := 0, 0
+
+	for _, f := range mediaFiles {
+		cmd := exec.Command("exiftool",
+			"-overwrite_original",
+			"-CreateDate<DateTimeOriginal",
+			"-ModifyDate<DateTimeOriginal",
+			f,
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			failed++
+			detail := strings.TrimSpace(string(out))
+			if detail == "" {
+				detail = err.Error()
+			}
+			writeLog(f, detail)
+			progress.Error("FAIL %s: %s", filepath.Base(f), detail)
+			continue
+		}
+		processed++
+	}
+
+	if failed > 0 {
+		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
+		progress.Info("Log: %s", logPath)
+	} else {
+		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
+	}
 	return nil
 }
 
-// buildExiftoolArgs constructs the exiftool argument list for the batch write.
-func buildExiftoolArgs(files []string) []string {
-	args := []string{
-		"-overwrite_original",
-		"-CreateDate<DateTimeOriginal",
-		"-ModifyDate<DateTimeOriginal",
+// readDateTimeOriginal returns the DateTimeOriginal value for the given file,
+// or an empty string if it cannot be read.
+func readDateTimeOriginal(filePath string) string {
+	out, err := exec.Command("exiftool", "-DateTimeOriginal", "-s3", filePath).Output()
+	if err != nil {
+		return ""
 	}
-	return append(args, files...)
+	return strings.TrimSpace(string(out))
 }
