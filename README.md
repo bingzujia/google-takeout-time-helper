@@ -42,6 +42,7 @@ make build          # 产物：bin/gtoh
 gtoh migrate      <input_dir> <output_dir>   # 迁移 Google Takeout 照片
 gtoh classify     <input_dir> <output_dir>   # 按类型分类媒体文件
 gtoh fix-exif-dates --dir <dir>              # 同步 DateTimeOriginal → CreateDate & ModifyDate
+gtoh dedup        <input_dir>                # 检测并整理重复图片
 ```
 
 `gtoh` 专注于修复 Google Takeout 导出照片的时间戳，并提供分类整理工具。各命令均支持 `--dry-run` 预览模式，不会实际修改文件（`fix-exif-dates` 使用 `--dry-run`）。所有写入 EXIF 元数据的命令均需安装 `exiftool`。
@@ -163,6 +164,51 @@ Done. Processed: 38, Skipped: 2
 
 ---
 
+### `gtoh dedup` — 检测并整理重复图片
+
+**用途**：扫描 `<input_dir>` 下的**一级**图片文件（非递归），通过感知哈希（pHash + dHash 双重校验）检测重复，将每个重复批次移动到 `<input_dir>/dedup/group-001/`、`group-002/` … 等子目录，方便人工审查或删除。
+
+支持格式：`jpg`、`jpeg`、`png`、`gif`、`bmp`、`tiff`、`tif`、`webp`、`heic`、`heif`。
+
+**用法**：
+
+```bash
+gtoh dedup "/path/to/photos"
+gtoh dedup "/path/to/photos" --dry-run
+gtoh dedup "/path/to/photos" --threshold 5   # 更严格的相似度（默认 10）
+```
+
+**预期输出**：
+
+```
+Input:     /path/to/photos
+Threshold: 10
+Mode:      dry-run (no files will be moved)
+
+[group-001] 3 duplicate file(s):
+  /path/to/photos/a.jpg → /path/to/photos/dedup/group-001/a.jpg
+  /path/to/photos/b.jpg → /path/to/photos/dedup/group-001/b.jpg
+  /path/to/photos/c.jpg → /path/to/photos/dedup/group-001/c.jpg
+
+[group-002] 2 duplicate file(s):
+  /path/to/photos/d.jpg → /path/to/photos/dedup/group-002/d.jpg
+  /path/to/photos/f.jpg → /path/to/photos/dedup/group-002/f.jpg
+
+Dry-run complete! (no files were moved)
+  Images scanned:   6
+  Duplicate groups: 2
+  Would move:       5 file(s)
+```
+
+**参数说明**：
+
+| 标志 | 默认值 | 说明 |
+|------|--------|------|
+| `--dry-run` | false | 仅预览，不移动文件 |
+| `--threshold` | 10 | 哈希距离阈值，越小越严格（pHash 和 dHash 均须 ≤ 阈值才判定为重复） |
+
+---
+
 ## 推荐工作流
 
 处理一份新的 Google Takeout 导出：
@@ -176,6 +222,10 @@ gtoh fix-exif-dates --dir "output"
 
 # 3. （可选）按类型整理分类
 gtoh classify "output" "sorted"
+
+# 4. （可选）检测并整理重复图片
+gtoh dedup "output" --dry-run   # 先预览
+gtoh dedup "output"             # 确认后执行
 ```
 
 ---
