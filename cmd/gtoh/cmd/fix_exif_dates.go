@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bingzujia/g_photo_take_out_helper/internal/migrator"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/parser"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
 	"github.com/spf13/cobra"
 )
@@ -81,11 +83,11 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 	// Dry-run: read DateTimeOriginal per file and print it.
 	if fixExifDatesDryRun {
 		for _, f := range mediaFiles {
-			dt := readDateTimeOriginal(f)
-			if dt == "" {
+			t, ok := parser.ParseEXIFTimestamp(f)
+			if !ok {
 				progress.Info("  %s  (no DateTimeOriginal)", f)
 			} else {
-				progress.Info("  %s  DateTimeOriginal=%s", f, dt)
+				progress.Info("  %s  DateTimeOriginal=%s", f, t.Format("2006:01:02 15:04:05"))
 			}
 		}
 		progress.Success("Dry-run complete. Would process: %d, Skipped: %d", len(mediaFiles), skipped)
@@ -102,25 +104,23 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 
 	writeLog := func(filePath, detail string) {
 		ts := time.Now().Format("2006-01-02 15:04:05")
-		fmt.Fprintf(logFile, "[%s] FAIL write: %s (%s)\n", ts, filePath, detail)
+		fmt.Fprintf(logFile, "[%s] FAIL write DateTimeOriginal/FileModifyDate: %s (%s)\n", ts, filePath, detail)
 	}
 
 	processed, failed := 0, 0
+	writer := migrator.ExifWriter{}
 
 	for _, f := range mediaFiles {
-		cmd := exec.Command("exiftool",
-			"-overwrite_original",
-			"-CreateDate<DateTimeOriginal",
-			"-ModifyDate<DateTimeOriginal",
-			f,
-		)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
+		t, ok := parser.ParseEXIFTimestamp(f)
+		if !ok {
 			failed++
-			detail := strings.TrimSpace(string(out))
-			if detail == "" {
-				detail = err.Error()
-			}
+			writeLog(f, "no DateTimeOriginal")
+			progress.Error("FAIL %s: no DateTimeOriginal", filepath.Base(f))
+			continue
+		}
+		if err := writer.WriteTimestamp(f, t); err != nil {
+			failed++
+			detail := err.Error()
 			writeLog(f, detail)
 			progress.Error("FAIL %s: %s", filepath.Base(f), detail)
 			continue
@@ -135,14 +135,4 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
 	}
 	return nil
-}
-
-// readDateTimeOriginal returns the DateTimeOriginal value for the given file,
-// or an empty string if it cannot be read.
-func readDateTimeOriginal(filePath string) string {
-	out, err := exec.Command("exiftool", "-DateTimeOriginal", "-s3", filePath).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
