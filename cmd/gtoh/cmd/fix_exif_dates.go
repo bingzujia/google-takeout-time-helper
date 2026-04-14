@@ -80,12 +80,14 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Dry-run: read DateTimeOriginal per file and print it.
+	// Dry-run: resolve timestamp per file and print it.
 	if fixExifDatesDryRun {
 		for _, f := range mediaFiles {
-			t, ok := parser.ParseEXIFTimestamp(f)
+			t, src, ok := resolveTimestamp(f)
 			if !ok {
-				progress.Info("  %s  (no DateTimeOriginal)", f)
+				progress.Info("  %s  (no DateTimeOriginal and no filename timestamp)", f)
+			} else if src == "filename" {
+				progress.Info("  %s  DateTimeOriginal=%s (from filename)", f, t.Format("2006:01:02 15:04:05"))
 			} else {
 				progress.Info("  %s  DateTimeOriginal=%s", f, t.Format("2006:01:02 15:04:05"))
 			}
@@ -111,12 +113,15 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 	writer := migrator.ExifWriter{}
 
 	for _, f := range mediaFiles {
-		t, ok := parser.ParseEXIFTimestamp(f)
+		t, src, ok := resolveTimestamp(f)
 		if !ok {
 			failed++
-			writeLog(f, "no DateTimeOriginal")
-			progress.Error("FAIL %s: no DateTimeOriginal", filepath.Base(f))
+			writeLog(f, "no DateTimeOriginal and no filename timestamp")
+			progress.Error("FAIL %s: no DateTimeOriginal and no filename timestamp", filepath.Base(f))
 			continue
+		}
+		if src == "filename" {
+			writeLog(f, "no DateTimeOriginal; timestamp from filename")
 		}
 		if err := writer.WriteTimestamp(f, t); err != nil {
 			failed++
@@ -135,4 +140,17 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
 	}
 	return nil
+}
+
+// resolveTimestamp tries to obtain a timestamp for the given media file.
+// It first checks the EXIF DateTimeOriginal field; if absent, it falls back to
+// parsing the filename. The returned source is "exif" or "filename".
+func resolveTimestamp(filePath string) (t time.Time, source string, ok bool) {
+	if t, ok = parser.ParseEXIFTimestamp(filePath); ok {
+		return t, "exif", true
+	}
+	if t, ok = parser.ParseFilenameTimestamp(filePath); ok {
+		return t, "filename", true
+	}
+	return time.Time{}, "", false
 }
