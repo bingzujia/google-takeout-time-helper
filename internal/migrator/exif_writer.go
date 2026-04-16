@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-// ExifWriter writes metadata to files using exiftool.
+// ExifWriter writes metadata to files using direct exiftool CLI calls.
+// Parser-side EXIF reads may use a shared wrapper, but writes stay on os/exec
+// so the full exiftool write surface remains available.
 type ExifWriter struct{}
 
 // WriteTimestamp writes DateTimeOriginal and FileModifyDate to a file.
