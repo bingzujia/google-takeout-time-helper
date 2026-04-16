@@ -1,64 +1,40 @@
 package parser
 
 import (
-	"bytes"
-	"encoding/json"
-	"os/exec"
 	"strconv"
 	"strings"
 )
 
-// exifGPSOutput mirrors the JSON output from exiftool -j for GPS tags.
-type exifGPSOutput struct {
-	GPSLatitude  *float64 `json:"GPSLatitude,omitempty"`
-	GPSLongitude *float64 `json:"GPSLongitude,omitempty"`
-	GPSAltitude  *float64 `json:"GPSAltitude,omitempty"`
-	// GPSCoordinates is a fallback tag some cameras use (e.g. "37.7749, -122.4194, 0")
-	GPSCoordinates string `json:"GPSCoordinates,omitempty"`
-}
-
 // GPSInfo holds parsed GPS data from a photo file.
 type GPSInfo struct {
-	Lat  float64
-	Lon  float64
-	Alt  float64
-	Has  bool // true if any GPS coordinate was found
+	Lat float64
+	Lon float64
+	Alt float64
+	Has bool // true if any GPS coordinate was found
 }
 
 // ParseEXIFGPS extracts GPS coordinates from a file using exiftool.
 // Returns GPSInfo with Has=false if exiftool is not available, the file has
 // no GPS data, or the command fails.
 func ParseEXIFGPS(filePath string) GPSInfo {
-	cmd := exec.Command("exiftool", "-n", "-j", "-GPSLatitude", "-GPSLongitude", "-GPSAltitude", "-GPSCoordinates", filePath)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
+	fields, err := readEXIFFields(filePath)
+	if err != nil {
 		return GPSInfo{}
 	}
-
-	var results []exifGPSOutput
-	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
-		return GPSInfo{}
-	}
-
-	if len(results) == 0 {
-		return GPSInfo{}
-	}
-
-	r := results[0]
 	info := GPSInfo{}
 
-	if r.GPSLatitude != nil && r.GPSLongitude != nil {
-		info.Lat = *r.GPSLatitude
-		info.Lon = *r.GPSLongitude
-		// Filter out (0,0) — common placeholder for missing GPS
-		if info.Lat != 0 || info.Lon != 0 {
-			info.Has = true
+	if lat, latOK := parseFloatField(fields, "GPSLatitude"); latOK {
+		if lon, lonOK := parseFloatField(fields, "GPSLongitude"); lonOK {
+			info.Lat = lat
+			info.Lon = lon
+			// Filter out (0,0) — common placeholder for missing GPS
+			if info.Lat != 0 || info.Lon != 0 {
+				info.Has = true
+			}
 		}
-	} else if r.GPSCoordinates != "" {
+	} else if coords, ok := parseStringField(fields, "GPSCoordinates"); ok && coords != "" {
 		// Fallback: parse "lat, lon, alt" string
-		if lat, lon, alt, ok := parseGPSCoords(r.GPSCoordinates); ok {
+		if lat, lon, alt, ok := parseGPSCoords(coords); ok {
 			info.Lat = lat
 			info.Lon = lon
 			info.Alt = alt
@@ -69,14 +45,36 @@ func ParseEXIFGPS(filePath string) GPSInfo {
 		}
 	}
 
-	if r.GPSAltitude != nil {
-		info.Alt = *r.GPSAltitude
+	if alt, ok := parseFloatField(fields, "GPSAltitude"); ok {
+		info.Alt = alt
 		if !info.Has {
 			info.Has = true
 		}
 	}
 
 	return info
+}
+
+func resetSharedExifReaderForTest() {
+	exifReaderMu.Lock()
+	defer exifReaderMu.Unlock()
+
+	if sharedExifReader != nil {
+		_ = sharedExifReader.Close()
+		sharedExifReader = nil
+	}
+	newSharedReaderFn = newGoExiftoolReader
+}
+
+func setSharedExifReaderFactoryForTest(factory func() (exifReader, error)) {
+	exifReaderMu.Lock()
+	defer exifReaderMu.Unlock()
+
+	if sharedExifReader != nil {
+		_ = sharedExifReader.Close()
+		sharedExifReader = nil
+	}
+	newSharedReaderFn = factory
 }
 
 // parseGPSCoords parses a "lat, lon, alt" or "lat, lon" coordinate string.
