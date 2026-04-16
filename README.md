@@ -26,12 +26,38 @@ chmod +x gtoh-darwin-arm64
 mv gtoh-darwin-arm64 /usr/local/bin/gtoh
 ```
 
+> 默认发布的二进制可直接使用 `migrate` / `classify` / `fix-exif-dates` / `dedup`。  
+> 若要使用 `to-heic`，需在系统中安装 **`ffmpeg`**（含 libx265 和 HEIF/HEIC 容器支持）与 **`exiftool`**。
+
 ### 方式二：从源码编译
 
 ```bash
 git clone https://github.com/bingzujia/g_photo_take_out_helper.git
 cd g_photo_take_out_helper
 make build          # 产物：bin/gtoh
+```
+
+### 可选：启用 HEIC 转换能力
+
+`gtoh to-heic` 使用系统安装的 **`ffmpeg`** 作为 HEIC 编码后端，默认采用 CRF 21（≈ 有损质量 80，`medium` 预设）。超过 4000 万像素的大图会以更严格的参数（`-threads 1`、`-pix_fmt yuv420p`）串行处理，以降低内存峰值。
+
+安装依赖（Debian / Ubuntu 示例）：
+
+```bash
+sudo apt-get install -y ffmpeg libimage-exiftool-perl
+```
+
+macOS：
+
+```bash
+brew install ffmpeg exiftool
+```
+
+验证 ffmpeg 是否支持 HEIC（需含 `libx265` 编码器与 `heif` 封装器）：
+
+```bash
+ffmpeg -encoders 2>/dev/null | grep libx265
+ffmpeg -formats  2>/dev/null | grep heif
 ```
 
 ---
@@ -41,6 +67,7 @@ make build          # 产物：bin/gtoh
 ```
 gtoh migrate      <input_dir> <output_dir>   # 迁移 Google Takeout 照片
 gtoh classify     <input_dir> <output_dir>   # 按类型分类媒体文件
+gtoh to-heic      <input_dir>                # 将根目录图片原地转换为 HEIC
 gtoh fix-exif-dates --dir <dir>              # 同步 DateTimeOriginal → CreateDate & ModifyDate
 gtoh dedup        <input_dir>                # 检测并整理重复图片
 ```
@@ -111,7 +138,7 @@ Processing complete!
 
 ### `gtoh classify` — 按类型分类媒体文件
 
-**用途**：扫描 `input_dir` 一级子目录下的媒体文件，根据文件名规则或 EXIF 设备信息，将文件移动到 `output_dir` 的对应子目录中。
+**用途**：扫描 `input_dir` **根目录下的媒体文件**，根据文件名规则或 EXIF 设备信息，将文件移动到 `output_dir` 的对应子目录中。
 
 | 目标目录 | 规则 |
 |----------|------|
@@ -121,6 +148,8 @@ Processing complete!
 | `seemsCamera/` | 无文件名匹配，但 `exiftool` 检测到 EXIF Make/Model |
 
 不匹配任何规则的文件原地保留，计入 Skipped。
+
+> `classify` 只处理 `input_dir` 根目录中的常规文件；子目录及其内部文件会被忽略。
 
 **用法**：
 
@@ -141,6 +170,49 @@ Classification complete!
   WeChat:        8 files
   SeemsCamera:   3 files
   Skipped:       7 files
+```
+
+---
+
+### `gtoh to-heic` — 将根目录图片原地转换为 HEIC
+
+**用途**：扫描 `input_dir` **根目录下的常规文件**，识别其中可解码的非 HEIC 图片，通过 **`ffmpeg`**（libx265，CRF 21，`medium` 预设，有损质量约 80）原地转换为 `.heic`。成功后迁移原图 EXIF 元数据（优先使用 FFmpeg 元数据映射）到新文件，再删除原文件；若目标 `.heic` 已存在则跳过；若扩展名与真实类型不符会先纠正，再转为 `.heic`；超过 **4000 万像素**的大图会串行处理，并强制 `-threads 1` 与 `-pix_fmt yuv420p` 以降低内存峰值。
+
+> `to-heic` 只处理 `input_dir` 根目录中的常规文件；子目录及其内部文件会被忽略。
+>
+> 需要系统已安装 `ffmpeg`（含 libx265 与 HEIF/HEIC 封装支持）和 `exiftool`。
+
+**用法**：
+
+```bash
+gtoh to-heic "/path/to/input"
+gtoh to-heic "/path/to/input" --dry-run
+gtoh to-heic "/path/to/input" --workers 1   # 降低并发以进一步节省内存
+```
+
+**参数说明**：
+
+| 标志 | 默认值 | 说明 |
+|------|--------|------|
+| `--dry-run` | false | 仅预览，不修改文件 |
+| `--workers` | 2 | 并发转换 worker 数；降低此值可减少内存压力 |
+
+**预期输出**：
+
+```
+Input:   /path/to/input
+Workers: 2
+
+🔄 [++++++++++++++++++++] 100% (12/12)
+
+HEIC conversion complete!
+  Root files scanned:   12
+  Converted:            9
+  Extension corrected:  2
+  Skipped (conflict):   1
+  Skipped (already HEIC): 1
+  Skipped (unsupported): 0
+  Failed:               1
 ```
 
 ---
@@ -220,10 +292,14 @@ gtoh migrate "Takeout/Google Photos" "output"
 # 2. （可选）补充同步 CreateDate / ModifyDate
 gtoh fix-exif-dates --dir "output"
 
-# 3. （可选）按类型整理分类
+# 3. （可选）先将根目录图片原地转换为 HEIC
+gtoh to-heic "output" --dry-run   # 先预览
+gtoh to-heic "output"             # 需安装 ffmpeg（含 libx265 + HEIF 支持）
+
+# 4. （可选）按类型整理分类
 gtoh classify "output" "sorted"
 
-# 4. （可选）检测并整理重复图片
+# 5. （可选）检测并整理重复图片
 gtoh dedup "output" --dry-run   # 先预览
 gtoh dedup "output"             # 确认后执行
 ```
@@ -234,6 +310,9 @@ gtoh dedup "output"             # 确认后执行
 
 - **备份优先**：建议在执行前对原始文件进行备份
 - **exiftool**：安装 `exiftool` 后可写入 EXIF 元数据（`DateTimeOriginal`）和 GPS 坐标；未安装时仅拷贝文件，不写入 EXIF
+- **ffmpeg（`to-heic` 必需）**：`to-heic` 依赖系统安装的 `ffmpeg`（需含 libx265 编码器与 HEIF/HEIC 封装支持）；缺少时命令会在启动时给出明确错误提示
+- **to-heic 行为**：仅处理输入目录第一级常规文件；遇到已存在的目标 `.heic` 会跳过，不会覆盖；超过 4000 万像素的大图会串行处理以降低内存峰值
+- **to-heic 内存调优**：默认使用 2 个并发 worker；若仍遇到内存压力，可通过 `--workers 1` 进一步降低并发
 - **Windows**：直接运行 `.exe`，无需 WSL 或 Bash 环境
 
 ---
