@@ -49,9 +49,20 @@ func TestParseFilenameTimestamp(t *testing.T) {
 		{"mmexport1491013330299-edited.jpg", time.Unix(1491013330, 0).UTC(), true},
 		{"mmexport1491013330299(1).jpg", time.Unix(1491013330, 0).UTC(), true},
 
+		// 12. TIM图片YYYYMMDDHHMMSS
+		{"TIM图片20181215185932.jpg", time.Date(2018, 12, 15, 18, 59, 32, 0, utc), true},
+
+		// 13. album_temp__..._<unix-seconds>
+		{"album_temp__ss6f5323f071bd7f7b6f521e8ss_1769347547.jpg", time.Unix(1769347547, 0).UTC(), true},
+
 		// edge cases — no match
 		{"photo.jpg", time.Time{}, false},
 		{"random_name.png", time.Time{}, false},
+		{"TIM图片abc20181215185932.jpg", time.Time{}, false},
+		{"TIM图片201812151859.jpg", time.Time{}, false},
+		{"album_temp__ss6f5323f071bd7f7b6f521e8ss_176934754.jpg", time.Time{}, false},
+		{"album_temp__ss6f5323f071bd7f7b6f521e8ss_9999999999.jpg", time.Time{}, false},
+		{"photo_1769347547.jpg", time.Time{}, false},
 
 		// regression: hex-like long digit strings should not produce valid dates
 		{"34290627826572a774e70a671.jpg", time.Time{}, false},
