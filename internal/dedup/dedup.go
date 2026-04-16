@@ -8,8 +8,12 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 
+	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
 	"github.com/corona10/goimagehash"
 )
 
@@ -22,17 +26,19 @@ var imageExts = map[string]bool{
 
 // Config holds deduplication settings.
 type Config struct {
-	Threshold int  // max hash distance to consider "duplicate" (lower = stricter)
-	Recursive bool // scan subdirectories
-	DryRun    bool // don't delete, just report
+	Threshold    int  // max hash distance to consider "duplicate" (lower = stricter)
+	Recursive    bool // scan subdirectories
+	DryRun       bool // don't delete, just report
+	ShowProgress bool // display progress during per-file preparation
 }
 
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Threshold: 10, // both pHash and dHash must be <= this
-		Recursive: true,
-		DryRun:    true,
+		Threshold:    10, // both pHash and dHash must be <= this
+		Recursive:    true,
+		DryRun:       true,
+		ShowProgress: false,
 	}
 }
 
@@ -70,92 +76,21 @@ type FileError struct {
 
 // Run executes deduplication on the given directory.
 func Run(rootDir string, cfg Config) (*Result, error) {
-	// Step 1: collect all image files
-	var imagePaths []string
-	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // skip errors, they'll be caught during hashing
-		}
-		if info.IsDir() && !cfg.Recursive && path != rootDir {
-			return filepath.SkipDir
-		}
-		if !info.IsDir() && imageExts[strings.ToLower(filepath.Ext(path))] {
-			imagePaths = append(imagePaths, path)
-		}
-		return nil
-	})
+	imagePaths, err := collectImagePaths(rootDir, cfg.Recursive)
 	if err != nil {
-		return nil, fmt.Errorf("walk directory: %w", err)
+		return nil, err
 	}
 
-	// Step 2: compute hashes
-	type hashEntry struct {
-		path string
-		size int64
-		img  image.Image
-	}
-
-	var entries []hashEntry
-	var errors []FileError
-
-	for _, path := range imagePaths {
-		info, err := os.Stat(path)
-		if err != nil {
-			errors = append(errors, FileError{path, err.Error()})
-			continue
-		}
-
-		f, err := os.Open(path)
-		if err != nil {
-			errors = append(errors, FileError{path, err.Error()})
-			continue
-		}
-
-		img, _, err := image.Decode(f)
-		f.Close()
-		if err != nil {
-			errors = append(errors, FileError{path, "decode: " + err.Error()})
-			continue
-		}
-
-		entries = append(entries, hashEntry{
-			path: path,
-			size: info.Size(),
-			img:  img,
-		})
-	}
-
-	// Step 3: compute both pHash and dHash for each image
-	type hashPair struct {
-		phash uint64
-		dhash uint64
-	}
-	hashPairs := make([]hashPair, len(entries))
-	for i, e := range entries {
-		ph, err := goimagehash.PerceptionHash(e.img)
-		if err != nil {
-			errors = append(errors, FileError{e.path, "phash: " + err.Error()})
-			continue
-		}
-		dh, err := goimagehash.DifferenceHash(e.img)
-		if err != nil {
-			errors = append(errors, FileError{e.path, "dhash: " + err.Error()})
-			continue
-		}
-		hashPairs[i] = hashPair{
-			phash: ph.GetHash(),
-			dhash: dh.GetHash(),
-		}
-	}
+	entries, errors := prepareEntries(imagePaths, cfg.ShowProgress)
 
 	// Step 4: group duplicates — BOTH pHash AND dHash must be within threshold
 	uf := newUnionFind(len(entries))
-	for i := 0; i < len(hashPairs); i++ {
-		for j := i + 1; j < len(hashPairs); j++ {
-			pDist, _ := goimagehash.NewImageHash(hashPairs[i].phash, goimagehash.PHash).Distance(
-				goimagehash.NewImageHash(hashPairs[j].phash, goimagehash.PHash))
-			dDist, _ := goimagehash.NewImageHash(hashPairs[i].dhash, goimagehash.DHash).Distance(
-				goimagehash.NewImageHash(hashPairs[j].dhash, goimagehash.DHash))
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			pDist, _ := goimagehash.NewImageHash(entries[i].phash, goimagehash.PHash).Distance(
+				goimagehash.NewImageHash(entries[j].phash, goimagehash.PHash))
+			dDist, _ := goimagehash.NewImageHash(entries[i].dhash, goimagehash.DHash).Distance(
+				goimagehash.NewImageHash(entries[j].dhash, goimagehash.DHash))
 			if pDist <= cfg.Threshold && dDist <= cfg.Threshold {
 				uf.union(i, j)
 			}
@@ -184,12 +119,11 @@ func Run(rootDir string, cfg Config) (*Result, error) {
 
 		var files []ImageInfo
 		for _, idx := range group {
-			bounds := entries[idx].img.Bounds()
 			files = append(files, ImageInfo{
 				Path:   entries[idx].path,
 				Size:   entries[idx].size,
-				Width:  bounds.Dx(),
-				Height: bounds.Dy(),
+				Width:  entries[idx].width,
+				Height: entries[idx].height,
 			})
 		}
 
@@ -218,6 +152,133 @@ func Run(rootDir string, cfg Config) (*Result, error) {
 		Groups:       dupGroups,
 		Errors:       errors,
 	}, nil
+}
+
+type preparedEntry struct {
+	path   string
+	size   int64
+	width  int
+	height int
+	phash  uint64
+	dhash  uint64
+}
+
+type preparedResult struct {
+	entry preparedEntry
+	err   *FileError
+	ok    bool
+}
+
+func collectImagePaths(rootDir string, recursive bool) ([]string, error) {
+	var imagePaths []string
+	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // skip errors, they'll be caught during hashing
+		}
+		if info.IsDir() && !recursive && path != rootDir {
+			return filepath.SkipDir
+		}
+		if !info.IsDir() && imageExts[strings.ToLower(filepath.Ext(path))] {
+			imagePaths = append(imagePaths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk directory: %w", err)
+	}
+	return imagePaths, nil
+}
+
+func prepareEntries(imagePaths []string, showProgress bool) ([]preparedEntry, []FileError) {
+	if len(imagePaths) == 0 {
+		return nil, nil
+	}
+
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	results := make([]preparedResult, len(imagePaths))
+	var wg sync.WaitGroup
+	var completed atomic.Int64
+	reporter := progress.NewReporter(len(imagePaths), showProgress)
+	defer reporter.Close()
+
+	jobCh := make(chan int, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobCh {
+				results[idx] = prepareEntry(imagePaths[idx])
+				reporter.Update(int(completed.Add(1)))
+			}
+		}()
+	}
+
+	for idx := range imagePaths {
+		jobCh <- idx
+	}
+	close(jobCh)
+	wg.Wait()
+
+	entries := make([]preparedEntry, 0, len(results))
+	errors := make([]FileError, 0)
+	for _, res := range results {
+		if res.err != nil {
+			errors = append(errors, *res.err)
+			continue
+		}
+		if res.ok {
+			entries = append(entries, res.entry)
+		}
+	}
+
+	return entries, errors
+}
+
+func prepareEntry(path string) preparedResult {
+	info, err := os.Stat(path)
+	if err != nil {
+		return preparedResult{err: &FileError{Path: path, Error: err.Error()}}
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return preparedResult{err: &FileError{Path: path, Error: err.Error()}}
+	}
+
+	img, _, err := image.Decode(f)
+	f.Close()
+	if err != nil {
+		return preparedResult{err: &FileError{Path: path, Error: "decode: " + err.Error()}}
+	}
+
+	ph, err := goimagehash.PerceptionHash(img)
+	if err != nil {
+		return preparedResult{err: &FileError{Path: path, Error: "phash: " + err.Error()}}
+	}
+	dh, err := goimagehash.DifferenceHash(img)
+	if err != nil {
+		return preparedResult{err: &FileError{Path: path, Error: "dhash: " + err.Error()}}
+	}
+
+	bounds := img.Bounds()
+	return preparedResult{
+		ok: true,
+		entry: preparedEntry{
+			path:   path,
+			size:   info.Size(),
+			width:  bounds.Dx(),
+			height: bounds.Dy(),
+			phash:  ph.GetHash(),
+			dhash:  dh.GetHash(),
+		},
+	}
 }
 
 // unionFind implements disjoint-set for grouping duplicates.
