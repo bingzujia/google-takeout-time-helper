@@ -5,7 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bingzujia/g_photo_take_out_helper/internal/migrator"
@@ -54,24 +57,9 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("exiftool not found in PATH: install exiftool and retry")
 	}
 
-	entries, err := os.ReadDir(fixExifDatesDir)
+	mediaFiles, skipped, err := collectFixExifMediaFiles(fixExifDatesDir)
 	if err != nil {
-		return fmt.Errorf("reading directory %q: %w", fixExifDatesDir, err)
-	}
-
-	var mediaFiles []string
-	skipped := 0
-
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(e.Name()))
-		if !mediaExts[ext] {
-			skipped++
-			continue
-		}
-		mediaFiles = append(mediaFiles, filepath.Join(fixExifDatesDir, e.Name()))
+		return err
 	}
 
 	if len(mediaFiles) == 0 {
@@ -82,16 +70,13 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 
 	// Dry-run: resolve timestamp per file and print it.
 	if fixExifDatesDryRun {
-		for _, f := range mediaFiles {
-			t, src, ok := resolveTimestamp(f)
-			if !ok {
-				progress.Info("  %s  (no DateTimeOriginal and no filename timestamp)", f)
-			} else if src == "filename" {
-				progress.Info("  %s  DateTimeOriginal=%s (from filename)", f, t.Format("2006:01:02 15:04:05"))
-			} else {
-				progress.Info("  %s  DateTimeOriginal=%s", f, t.Format("2006:01:02 15:04:05"))
-			}
-		}
+		runFixExifFiles(mediaFiles, fixExifRunOptions{
+			DryRun:           true,
+			ResolveTimestamp: resolveTimestamp,
+			ReportDryRun:     reportFixExifDryRun,
+			WorkerCount:      fixExifWorkerCount(),
+			ShowProgress:     true,
+		})
 		progress.Success("Dry-run complete. Would process: %d, Skipped: %d", len(mediaFiles), skipped)
 		return nil
 	}
@@ -111,27 +96,15 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 
 	processed, failed := 0, 0
 	writer := migrator.ExifWriter{}
-
-	for _, f := range mediaFiles {
-		t, src, ok := resolveTimestamp(f)
-		if !ok {
-			failed++
-			writeLog(f, "no DateTimeOriginal and no filename timestamp")
-			progress.Error("FAIL %s: no DateTimeOriginal and no filename timestamp", filepath.Base(f))
-			continue
-		}
-		if src == "filename" {
-			writeLog(f, "no DateTimeOriginal; timestamp from filename")
-		}
-		if err := writer.WriteTimestamp(f, t); err != nil {
-			failed++
-			detail := err.Error()
-			writeLog(f, detail)
-			progress.Error("FAIL %s: %s", filepath.Base(f), detail)
-			continue
-		}
-		processed++
-	}
+	processed, failed = runFixExifFiles(mediaFiles, fixExifRunOptions{
+		DryRun:           false,
+		ResolveTimestamp: resolveTimestamp,
+		WriteTimestamp:   writer.WriteTimestamp,
+		WriteLog:         writeLog,
+		ReportFailure:    reportFixExifFailure,
+		WorkerCount:      fixExifWorkerCount(),
+		ShowProgress:     true,
+	})
 
 	if failed > 0 {
 		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
@@ -140,6 +113,156 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
 	}
 	return nil
+}
+
+type fixExifRunOptions struct {
+	DryRun           bool
+	ResolveTimestamp func(string) (time.Time, string, bool)
+	WriteTimestamp   func(string, time.Time) error
+	WriteLog         func(string, string)
+	ReportDryRun     func(string, time.Time, string, bool)
+	ReportFailure    func(string, string)
+	WorkerCount      int
+	ShowProgress     bool
+}
+
+func collectFixExifMediaFiles(dir string) ([]string, int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading directory %q: %w", dir, err)
+	}
+
+	var mediaFiles []string
+	skipped := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if !mediaExts[ext] {
+			skipped++
+			continue
+		}
+		mediaFiles = append(mediaFiles, filepath.Join(dir, e.Name()))
+	}
+	return mediaFiles, skipped, nil
+}
+
+func fixExifWorkerCount() int {
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
+	}
+	if workers < 1 {
+		return 1
+	}
+	return workers
+}
+
+func runFixExifFiles(mediaFiles []string, opts fixExifRunOptions) (processed, failed int) {
+	if len(mediaFiles) == 0 {
+		return 0, 0
+	}
+
+	workers := opts.WorkerCount
+	if workers < 1 {
+		workers = fixExifWorkerCount()
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var processedCount int
+	var failedCount int
+	var completed atomic.Int64
+
+	reporter := progress.NewReporter(len(mediaFiles), opts.ShowProgress)
+	defer reporter.Close()
+
+	jobCh := make(chan string, workers)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for filePath := range jobCh {
+				if opts.DryRun {
+					t, src, ok := opts.ResolveTimestamp(filePath)
+					if opts.ReportDryRun != nil {
+						mu.Lock()
+						opts.ReportDryRun(filePath, t, src, ok)
+						mu.Unlock()
+					}
+					reporter.Update(int(completed.Add(1)))
+					continue
+				}
+
+				t, src, ok := opts.ResolveTimestamp(filePath)
+				if !ok {
+					mu.Lock()
+					failedCount++
+					if opts.WriteLog != nil {
+						opts.WriteLog(filePath, "no DateTimeOriginal and no filename timestamp")
+					}
+					if opts.ReportFailure != nil {
+						opts.ReportFailure(filePath, "no DateTimeOriginal and no filename timestamp")
+					}
+					mu.Unlock()
+					reporter.Update(int(completed.Add(1)))
+					continue
+				}
+
+				if src == "filename" && opts.WriteLog != nil {
+					mu.Lock()
+					opts.WriteLog(filePath, "no DateTimeOriginal; timestamp from filename")
+					mu.Unlock()
+				}
+
+				if err := opts.WriteTimestamp(filePath, t); err != nil {
+					detail := err.Error()
+					mu.Lock()
+					failedCount++
+					if opts.WriteLog != nil {
+						opts.WriteLog(filePath, detail)
+					}
+					if opts.ReportFailure != nil {
+						opts.ReportFailure(filePath, detail)
+					}
+					mu.Unlock()
+					reporter.Update(int(completed.Add(1)))
+					continue
+				}
+
+				mu.Lock()
+				processedCount++
+				mu.Unlock()
+				reporter.Update(int(completed.Add(1)))
+			}
+		}()
+	}
+
+	for _, filePath := range mediaFiles {
+		jobCh <- filePath
+	}
+	close(jobCh)
+	wg.Wait()
+
+	return processedCount, failedCount
+}
+
+func reportFixExifDryRun(filePath string, t time.Time, src string, ok bool) {
+	if !ok {
+		progress.Info("  %s  (no DateTimeOriginal and no filename timestamp)", filePath)
+		return
+	}
+	if src == "filename" {
+		progress.Info("  %s  DateTimeOriginal=%s (from filename)", filePath, t.Format("2006:01:02 15:04:05"))
+		return
+	}
+	progress.Info("  %s  DateTimeOriginal=%s", filePath, t.Format("2006:01:02 15:04:05"))
+}
+
+func reportFixExifFailure(filePath, detail string) {
+	progress.Error("FAIL %s: %s", filepath.Base(filePath), detail)
 }
 
 // resolveTimestamp tries to obtain a timestamp for the given media file.
