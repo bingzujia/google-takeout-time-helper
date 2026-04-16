@@ -3,6 +3,7 @@ package classifier
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -119,11 +120,11 @@ func TestRun_Integration(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Input layout:
-	//   tmpDir/input/album1/IMG_20230401_120000.jpg   → camera
-	//   tmpDir/input/album1/Screenshot_001.png        → screenshot
-	//   tmpDir/input/album1/mmexport1234567890.jpg    → wechat
-	//   tmpDir/input/album1/random_file.jpg           → skipped (no exif, txt content)
-	//   tmpDir/input/root_file.jpg                    → ignored (root level, not in subdir)
+	//   tmpDir/input/IMG_20230401_120000.jpg   → camera
+	//   tmpDir/input/Screenshot_001.png        → screenshot
+	//   tmpDir/input/mmexport1234567890.jpg    → wechat
+	//   tmpDir/input/random_file.jpg           → skipped (no exif, txt content)
+	//   tmpDir/input/album1/nested.jpg         → ignored (subdir)
 	inputDir := filepath.Join(tmpDir, "input")
 	album1 := filepath.Join(inputDir, "album1")
 	if err := os.MkdirAll(album1, 0o755); err != nil {
@@ -132,23 +133,23 @@ func TestRun_Integration(t *testing.T) {
 
 	files := map[string]string{
 		"IMG_20230401_120000.jpg": "fake jpeg",
-		"Screenshot_001.png":     "fake png",
-		"mmexport1234567890.jpg": "fake wechat",
-		"random_file.jpg":        "fake random",
+		"Screenshot_001.png":      "fake png",
+		"mmexport1234567890.jpg":  "fake wechat",
+		"random_file.jpg":         "fake random",
 	}
 	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(album1, name), []byte(content), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(inputDir, name), []byte(content), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// Root-level file — should be ignored.
-	if err := os.WriteFile(filepath.Join(inputDir, "root.jpg"), []byte("root"), 0644); err != nil {
+	// Subdirectory file — should be ignored.
+	if err := os.WriteFile(filepath.Join(album1, "nested.jpg"), []byte("nested"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	outputDir := filepath.Join(tmpDir, "output")
 
-	result, err := Run(Config{InputDir: inputDir, OutputDir: outputDir, DryRun: false})
+	result, err := Run(Config{InputDir: inputDir, OutputDir: outputDir, DryRun: false, ShowProgress: false})
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -174,23 +175,22 @@ func TestRun_Integration(t *testing.T) {
 	assertExists(t, filepath.Join(outputDir, "screenshot", "Screenshot_001.png"))
 	assertExists(t, filepath.Join(outputDir, "wechat", "mmexport1234567890.jpg"))
 
-	// Root-level file must still be at root — not touched.
-	assertExists(t, filepath.Join(inputDir, "root.jpg"))
+	// Subdirectory file must still be in place — not touched.
+	assertExists(t, filepath.Join(album1, "nested.jpg"))
 }
 
 func TestRun_DryRun(t *testing.T) {
 	tmpDir := t.TempDir()
 	inputDir := filepath.Join(tmpDir, "input")
-	album1 := filepath.Join(inputDir, "album1")
-	if err := os.MkdirAll(album1, 0o755); err != nil {
+	if err := os.MkdirAll(inputDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(album1, "IMG_001.jpg"), []byte("data"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(inputDir, "IMG_001.jpg"), []byte("data"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	outputDir := filepath.Join(tmpDir, "output")
 
-	result, err := Run(Config{InputDir: inputDir, OutputDir: outputDir, DryRun: true})
+	result, err := Run(Config{InputDir: inputDir, OutputDir: outputDir, DryRun: true, ShowProgress: false})
 	if err != nil {
 		t.Fatalf("Run(DryRun) returned error: %v", err)
 	}
@@ -202,7 +202,50 @@ func TestRun_DryRun(t *testing.T) {
 		t.Error("output directory should not exist after dry-run")
 	}
 	// Source file must still exist.
-	assertExists(t, filepath.Join(album1, "IMG_001.jpg"))
+	assertExists(t, filepath.Join(inputDir, "IMG_001.jpg"))
+}
+
+func TestScanEligibleFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputDir := filepath.Join(tmpDir, "input")
+	album1 := filepath.Join(inputDir, "album1")
+	nested := filepath.Join(album1, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inputDir, "root.jpg"), []byte("root"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(album1, "a.jpg"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inputDir, "b.png"), []byte("b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "c.jpg"), []byte("c"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := scanEligibleFiles(inputDir)
+	if err != nil {
+		t.Fatalf("scanEligibleFiles() error = %v", err)
+	}
+
+	var names []string
+	for _, f := range files {
+		names = append(names, f.Name)
+	}
+	sort.Strings(names)
+
+	want := []string{"b.png", "root.jpg"}
+	if len(names) != len(want) {
+		t.Fatalf("len(names) = %d, want %d (%v)", len(names), len(want), names)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("names[%d] = %q, want %q", i, names[i], want[i])
+		}
+	}
 }
 
 func assertExists(t *testing.T, path string) {
