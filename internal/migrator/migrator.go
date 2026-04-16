@@ -156,27 +156,10 @@ func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir s
 	var mu sync.Mutex // protects logger and stats
 	var processed atomic.Int64
 	total := len(entries)
+	reporter := progress.NewReporter(total, showProgress)
+	defer reporter.Close()
 
 	jobCh := make(chan FileEntry, workers)
-
-	// progCh serializes all progress updates through a single goroutine so that
-	// concurrent workers never interleave their \r-based progress output.
-	var progWg sync.WaitGroup
-	progCh := make(chan int, workers)
-	if showProgress && total > 0 {
-		progWg.Add(1)
-		go func() {
-			defer progWg.Done()
-			last := 0
-			for cur := range progCh {
-				if cur > last {
-					last = cur
-					progress.PrintProgress(cur, total)
-				}
-			}
-			fmt.Println()
-		}()
-	}
 
 	// Start workers
 	for i := 0; i < workers; i++ {
@@ -186,9 +169,7 @@ func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir s
 			for entry := range jobCh {
 				processSingleFile(entry, outputDir, metadataDir, manualReviewDir, logger, exifWriter, stats, &mu)
 				cur := int(processed.Add(1))
-				if showProgress && shouldUpdate(cur, total) {
-					progCh <- cur
-				}
+				reporter.Update(cur)
 			}
 		}()
 	}
@@ -201,16 +182,6 @@ func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir s
 
 	// Wait for workers then signal progress goroutine to exit.
 	wg.Wait()
-	close(progCh)
-	progWg.Wait()
-}
-
-// shouldUpdate determines whether to refresh the progress bar.
-func shouldUpdate(current, total int) bool {
-	if total < 1000 {
-		return true
-	}
-	return current%10 == 0 || current == total
 }
 
 // processSingleFile handles one media file through the full pipeline.
