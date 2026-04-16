@@ -87,6 +87,54 @@ func TestRun_NonRecursive(t *testing.T) {
 	}
 }
 
+func TestCollectImagePaths_NonRecursive(t *testing.T) {
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createSolidImage(t, filepath.Join(tmpDir, "a.jpg"), color.RGBA{10, 10, 10, 255})
+	createSolidImage(t, filepath.Join(subDir, "b.jpg"), color.RGBA{20, 20, 20, 255})
+	if err := os.WriteFile(filepath.Join(tmpDir, "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := collectImagePaths(tmpDir, false)
+	if err != nil {
+		t.Fatalf("collectImagePaths() error = %v", err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("len(paths) = %d, want 1", len(paths))
+	}
+	if got := filepath.Base(paths[0]); got != "a.jpg" {
+		t.Fatalf("paths[0] = %q, want a.jpg", got)
+	}
+}
+
+func TestRun_CorruptImageCollectedAsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	createSolidImage(t, filepath.Join(tmpDir, "ok.jpg"), color.RGBA{30, 30, 30, 255})
+	if err := os.WriteFile(filepath.Join(tmpDir, "bad.jpg"), []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.ShowProgress = false
+	result, err := Run(tmpDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TotalScanned != 1 {
+		t.Fatalf("TotalScanned = %d, want 1", result.TotalScanned)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("len(Errors) = %d, want 1", len(result.Errors))
+	}
+	if filepath.Base(result.Errors[0].Path) != "bad.jpg" {
+		t.Fatalf("error path = %q, want bad.jpg", result.Errors[0].Path)
+	}
+}
+
 func createSolidImage(t *testing.T, path string, c color.Color) {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
@@ -134,7 +182,7 @@ func createStripedImage(t *testing.T, path string, stripeHeight int) {
 	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
 	for x := 0; x < 64; x++ {
 		for y := 0; y < 64; y++ {
-			if (y / stripeHeight) % 2 == 0 {
+			if (y/stripeHeight)%2 == 0 {
 				img.Set(x, y, color.White)
 			} else {
 				img.Set(x, y, color.Black)

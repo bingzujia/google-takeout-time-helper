@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/bingzujia/g_photo_take_out_helper/internal/dedup"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
 	"github.com/spf13/cobra"
 )
 
@@ -53,9 +54,10 @@ func runDedup(_ *cobra.Command, args []string) error {
 
 	// Task 2.1: call dedup.Run with Recursive: false (top-level only)
 	cfg := dedup.Config{
-		Threshold: dedupThreshold,
-		Recursive: false,
-		DryRun:    dedupDryRun,
+		Threshold:    dedupThreshold,
+		Recursive:    false,
+		DryRun:       dedupDryRun,
+		ShowProgress: true,
 	}
 	result, err := dedup.Run(inputDir, cfg)
 	if err != nil {
@@ -64,7 +66,7 @@ func runDedup(_ *cobra.Command, args []string) error {
 
 	// Task 3.3: print per-file warnings without stopping
 	for _, fe := range result.Errors {
-		fmt.Fprintf(os.Stderr, "warning: %s: %s\n", fe.Path, fe.Error)
+		progress.Warning("%s: %s", fe.Path, fe.Error)
 	}
 
 	if result.TotalGroups == 0 {
