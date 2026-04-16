@@ -8,10 +8,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bingzujia/g_photo_take_out_helper/internal/organizer"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
+)
+
+var (
+	exiftoolPathOnce  sync.Once
+	exiftoolPath      string
+	exiftoolAvailable bool
+	exiftoolWarnOnce  sync.Once
 )
 
 // Category is the destination bucket for a classified file.
@@ -26,9 +37,10 @@ const (
 
 // Config holds settings for a classify run.
 type Config struct {
-	InputDir  string
-	OutputDir string
-	DryRun    bool
+	InputDir     string
+	OutputDir    string
+	DryRun       bool
+	ShowProgress bool
 }
 
 // Result holds counts after a Run.
@@ -40,58 +52,108 @@ type Result struct {
 	Skipped     int
 }
 
-// Run classifies media files from first-level subdirectories of cfg.InputDir
-// and moves them into category subdirectories under cfg.OutputDir.
+// Run classifies media files from the root of cfg.InputDir and moves them into
+// category subdirectories under cfg.OutputDir.
 func Run(cfg Config) (Result, error) {
 	var result Result
 
-	subdirs, err := scanFirstLevel(cfg.InputDir)
+	files, err := scanEligibleFiles(cfg.InputDir)
 	if err != nil {
 		return result, fmt.Errorf("scan input dir: %w", err)
 	}
-
-	for _, subdir := range subdirs {
-		entries, err := os.ReadDir(subdir)
-		if err != nil {
-			return result, fmt.Errorf("read dir %s: %w", subdir, err)
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			filePath := filepath.Join(subdir, e.Name())
-			cat, ok := classifyFile(e.Name())
-			if !ok {
-				// Fallback: inspect EXIF for camera device info.
-				hasCam, _ := exiftoolFallback(filePath)
-				if hasCam {
-					cat = CategorySeemsCamera
-				} else {
-					result.Skipped++
-					continue
-				}
-			}
-			if err := moveToCategory(filePath, e.Name(), cfg.OutputDir, cat, cfg.DryRun, &result); err != nil {
-				return result, err
-			}
-		}
+	if len(files) == 0 {
+		return result, nil
 	}
-	return result, nil
+
+	return runParallel(files, cfg)
 }
 
-// scanFirstLevel returns paths of immediate subdirectories of inputDir.
-func scanFirstLevel(inputDir string) ([]string, error) {
+type fileJob struct {
+	Name string
+	Path string
+}
+
+func scanEligibleFiles(inputDir string) ([]fileJob, error) {
 	entries, err := os.ReadDir(inputDir)
 	if err != nil {
 		return nil, err
 	}
-	var dirs []string
+
+	var files []fileJob
 	for _, e := range entries {
 		if e.IsDir() {
-			dirs = append(dirs, filepath.Join(inputDir, e.Name()))
+			continue
+		}
+		files = append(files, fileJob{
+			Name: e.Name(),
+			Path: filepath.Join(inputDir, e.Name()),
+		})
+	}
+	return files, nil
+}
+
+func runParallel(files []fileJob, cfg Config) (Result, error) {
+	var result Result
+
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	var wg sync.WaitGroup
+	var resultMu sync.Mutex
+	var completed atomic.Int64
+	var firstErr error
+	var errOnce sync.Once
+	locker := newDestinationLocker()
+
+	reporter := progress.NewReporter(len(files), cfg.ShowProgress)
+	defer reporter.Close()
+
+	jobCh := make(chan fileJob, workers)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobCh {
+				if err := processFile(job, cfg, &result, &resultMu, locker); err != nil {
+					errOnce.Do(func() {
+						firstErr = err
+					})
+				}
+				reporter.Update(int(completed.Add(1)))
+			}
+		}()
+	}
+
+	for _, job := range files {
+		jobCh <- job
+	}
+	close(jobCh)
+	wg.Wait()
+
+	return result, firstErr
+}
+
+func processFile(job fileJob, cfg Config, result *Result, resultMu *sync.Mutex, locker *destinationLocker) error {
+	cat, ok := classifyFile(job.Name)
+	if !ok {
+		hasCam, _ := exiftoolFallback(job.Path)
+		if hasCam {
+			cat = CategorySeemsCamera
+		} else {
+			resultMu.Lock()
+			result.Skipped++
+			resultMu.Unlock()
+			return nil
 		}
 	}
-	return dirs, nil
+
+	return moveToCategory(job.Path, job.Name, cfg.OutputDir, cat, cfg.DryRun, result, resultMu, locker)
 }
 
 // classifyFile maps organizer filename rules to a Category.
@@ -121,12 +183,15 @@ type exifDeviceOutput struct {
 // exiftoolFallback returns true if the file's EXIF Make or Model tag is non-empty.
 // Returns (false, nil) gracefully when exiftool is not installed or the command fails.
 func exiftoolFallback(path string) (bool, error) {
-	if _, err := exec.LookPath("exiftool"); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: exiftool not found, skipping EXIF fallback for %s\n", path)
+	cmdPath, ok := lookupExiftool()
+	if !ok {
+		exiftoolWarnOnce.Do(func() {
+			progress.Warning("exiftool not found, skipping EXIF fallback")
+		})
 		return false, nil
 	}
 
-	cmd := exec.Command("exiftool", "-Make", "-Model", "-j", path)
+	cmd := exec.Command(cmdPath, "-Make", "-Model", "-j", path)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -142,14 +207,19 @@ func exiftoolFallback(path string) (bool, error) {
 }
 
 // moveToCategory moves src into <outputDir>/<category>/, respecting dry-run mode.
-func moveToCategory(src, name, outputDir string, cat Category, dryRun bool, result *Result) error {
+func moveToCategory(src, name, outputDir string, cat Category, dryRun bool, result *Result, resultMu *sync.Mutex, locker *destinationLocker) error {
 	destDir := filepath.Join(outputDir, string(cat))
 
 	if dryRun {
-		fmt.Printf("  [dry-run] %s  →  %s/%s\n", src, string(cat), name)
+		progress.Info("  [dry-run] %s  →  %s/%s", src, string(cat), name)
+		resultMu.Lock()
 		incrementResult(result, cat)
+		resultMu.Unlock()
 		return nil
 	}
+
+	unlock := locker.Lock(destDir)
+	defer unlock()
 
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("create dest dir %s: %w", destDir, err)
@@ -159,13 +229,39 @@ func moveToCategory(src, name, outputDir string, cat Category, dryRun bool, resu
 	if err := os.Rename(src, destPath); err != nil {
 		// Try copy+delete for cross-device moves.
 		if err2 := copyFile(src, destPath); err2 != nil {
+			resultMu.Lock()
 			result.Skipped++
+			resultMu.Unlock()
 			return nil
 		}
 		os.Remove(src)
 	}
+	resultMu.Lock()
 	incrementResult(result, cat)
+	resultMu.Unlock()
 	return nil
+}
+
+type destinationLocker struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+func newDestinationLocker() *destinationLocker {
+	return &destinationLocker{locks: make(map[string]*sync.Mutex)}
+}
+
+func (d *destinationLocker) Lock(destDir string) func() {
+	d.mu.Lock()
+	lock, ok := d.locks[destDir]
+	if !ok {
+		lock = &sync.Mutex{}
+		d.locks[destDir] = lock
+	}
+	d.mu.Unlock()
+
+	lock.Lock()
+	return lock.Unlock
 }
 
 func incrementResult(r *Result, cat Category) {
@@ -217,4 +313,15 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.Chtimes(dst, info.ModTime(), info.ModTime())
+}
+
+func lookupExiftool() (string, bool) {
+	exiftoolPathOnce.Do(func() {
+		path, err := exec.LookPath("exiftool")
+		if err == nil {
+			exiftoolPath = path
+			exiftoolAvailable = true
+		}
+	})
+	return exiftoolPath, exiftoolAvailable
 }

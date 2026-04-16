@@ -11,7 +11,7 @@ import (
 var classifyCmd = &cobra.Command{
 	Use:   "classify <input_dir> <output_dir>",
 	Short: "Classify media files into camera, screenshot, wechat, seemsCamera",
-	Long: `Classify media files from first-level subdirectories of input_dir.
+	Long: `Classify media files from the root of input_dir.
 
 Files are moved into subdirectories of output_dir:
   camera/      — filename matches known camera patterns (IMG_, VID_, PXL_, etc.)
@@ -49,9 +49,10 @@ func runClassify(_ *cobra.Command, args []string) error {
 	}
 
 	result, err := classifier.Run(classifier.Config{
-		InputDir:  inputDir,
-		OutputDir: outputDir,
-		DryRun:    classifyDryRun,
+		InputDir:     inputDir,
+		OutputDir:    outputDir,
+		DryRun:       classifyDryRun,
+		ShowProgress: true,
 	})
 	if err != nil {
 		return err
