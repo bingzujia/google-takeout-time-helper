@@ -82,11 +82,21 @@ var patterns = []pattern{
 	{
 		re: regexp.MustCompile(`(?i)mmexport(\d{13})(?:[(-].*)?`),
 		parse: func(m []string) (time.Time, bool) {
-			sec, err := strconv.ParseInt(m[1][:10], 10, 64)
-			if err != nil {
-				return time.Time{}, false
-			}
-			return time.Unix(sec, 0).UTC(), true
+			return parseUnixSeconds(m[1][:10])
+		},
+	},
+	// 12. TIM图片YYYYMMDDHHMMSS
+	{
+		re: regexp.MustCompile(`(?i)^TIM图片(\d{8})(\d{6})$`),
+		parse: func(m []string) (time.Time, bool) {
+			return parseDateTime8_6(m[1], m[2])
+		},
+	},
+	// 13. album_temp__..._<unix-seconds>
+	{
+		re: regexp.MustCompile(`(?i)^album_temp__.*_(\d{10})$`),
+		parse: func(m []string) (time.Time, bool) {
+			return parseUnixSeconds(m[1])
 		},
 	},
 }
@@ -101,6 +111,19 @@ func ParseFilenameTimestamp(filename string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+func parseUnixSeconds(secStr string) (time.Time, bool) {
+	sec, err := strconv.ParseInt(secStr, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	t := time.Unix(sec, 0).UTC()
+	if t.Year() < 1980 || t.Year() > 2100 {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 func parseDateTime8_6(date, timeStr string) (time.Time, bool) {
