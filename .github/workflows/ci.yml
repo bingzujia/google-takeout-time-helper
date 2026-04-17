@@ -48,7 +48,7 @@ jobs:
         run: |
           EXT=""
           [ "$GOOS" = "windows" ] && EXT=".exe"
-          go build -o "gtoh-$GOOS-$GOARCH$EXT" ./cmd/gtoh
+          go build -o "takeout-helper-$GOOS-$GOARCH$EXT" ./cmd/takeout-helper
       - uses: softprops/action-gh-release@v1
         with:
-          files: gtoh-*
+          files: takeout-helper-*

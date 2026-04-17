@@ -4,7 +4,7 @@ BINARY_NAME=takeout-helper
 BUILD_DIR=bin
 
 build:
-	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/gtoh
+	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/takeout-helper
 
 test:
 	go test ./...
