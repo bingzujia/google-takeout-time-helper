@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
@@ -45,7 +44,7 @@ func runFixName(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("exiftool not found in PATH: install exiftool and retry")
 	}
 
-	mediaFiles, skipped, err := collectFixNameMediaFiles(fixNameDir)
+	mediaFiles, skipped, err := collectMediaFiles(fixNameDir)
 	if err != nil {
 		return err
 	}
@@ -100,28 +99,6 @@ type fixNameRunOptions struct {
 	WriteLog     func(string, string)
 	WorkerCount  int
 	ShowProgress bool
-}
-
-func collectFixNameMediaFiles(dir string) ([]string, int, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, 0, fmt.Errorf("reading directory %q: %w", dir, err)
-	}
-
-	var mediaFiles []string
-	skipped := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		ext := filepath.Ext(e.Name())
-		if !mediaExts[ext] {
-			skipped++
-			continue
-		}
-		mediaFiles = append(mediaFiles, filepath.Join(dir, e.Name()))
-	}
-	return mediaFiles, skipped, nil
 }
 
 // runFixNameFiles processes files and returns (processed, noFilenameDate) counts.
