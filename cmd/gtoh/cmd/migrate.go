@@ -4,33 +4,43 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/migrator"
 	"github.com/spf13/cobra"
 )
 
 var migrateCmd = &cobra.Command{
-	Use:   "migrate <input_dir> <output_dir>",
+	Use:   "migrate",
 	Short: "Migrate Google Takeout photos with EXIF metadata",
 	Long: `Migrate photos from Google Takeout to a clean directory structure.
 
-Scans year folders (Photos from XXXX) in the input directory, extracts
-timestamps and GPS from EXIF/filename/JSON sidecars, copies files to
-the output directory, writes EXIF metadata via exiftool, and generates
-SHA-256-based metadata JSON files.`,
-	Args: cobra.ExactArgs(2),
+Scans year folders (Photos from XXXX) in the input directory, copies files to
+the output directory, and writes CreateDate + ModifyDate from JSON sidecar
+timestamps via exiftool. GPS is supplemented from JSON when absent from EXIF.
+Files without a JSON sidecar are copied as-is. Generates SHA-256-based metadata
+JSON files and a gtoh-log/migrate-{date}-{index}.log with per-file decisions.`,
+	Args: cobra.NoArgs,
 	RunE: runMigrate,
 }
 
-var migrateDryRun bool
+var (
+	migrateDryRun   bool
+	migrateInputDir string
+	migrateOutputDir string
+)
 
 func init() {
 	migrateCmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "preview migration without modifying files")
+	migrateCmd.Flags().StringVar(&migrateInputDir, "input-dir", "", "input directory containing Google Takeout exports")
+	migrateCmd.Flags().StringVar(&migrateOutputDir, "output-dir", "", "output directory for organized photos")
+	_ = migrateCmd.MarkFlagRequired("input-dir")
+	_ = migrateCmd.MarkFlagRequired("output-dir")
 	rootCmd.AddCommand(migrateCmd)
 }
 
-func runMigrate(_ *cobra.Command, args []string) error {
-	inputDir := args[0]
-	outputDir := args[1]
+func runMigrate(_ *cobra.Command, _ []string) error {
+	inputDir := migrateInputDir
+	outputDir := migrateOutputDir
 
 	// Validate input directory
 	if _, err := os.Stat(inputDir); os.IsNotExist(err) {
@@ -46,11 +56,18 @@ func runMigrate(_ *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
+	logger, err := logutil.OpenLog(outputDir, "migrate", migrateDryRun)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
+	}
+	defer logger.Close()
+
 	stats, err := migrator.Run(migrator.Config{
 		InputDir:     inputDir,
 		OutputDir:    outputDir,
 		ShowProgress: !migrateDryRun,
 		DryRun:       migrateDryRun,
+		Logger:       logger,
 	})
 	if err != nil {
 		return err
@@ -65,7 +82,6 @@ func runMigrate(_ *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  Scanned:            %d files\n", stats.Scanned)
 	fmt.Printf("  Processed:          %d files\n", stats.Processed)
-	fmt.Printf("  Skipped (no time):  %d files\n", stats.SkippedNoTime)
 	fmt.Printf("  Skipped (exists):   %d files\n", stats.SkippedExists)
 	fmt.Printf("  Failed (exiftool):  %d files\n", stats.FailedExif)
 	fmt.Printf("  Failed (other):     %d files\n", stats.FailedOther)
@@ -73,7 +89,7 @@ func runMigrate(_ *cobra.Command, args []string) error {
 	if migrateDryRun {
 		fmt.Println("  Log:                (not created in dry-run)")
 	} else {
-		fmt.Printf("  Log:                %s/gtoh.log\n", outputDir)
+		fmt.Printf("  Log:                %s\n", logger.Path())
 	}
 
 	return nil

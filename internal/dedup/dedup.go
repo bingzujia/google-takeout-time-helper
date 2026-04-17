@@ -8,12 +8,12 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 
+	"github.com/bingzujia/g_photo_take_out_helper/internal/hashcache"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/workerpool"
 	"github.com/corona10/goimagehash"
 )
 
@@ -26,19 +26,23 @@ var imageExts = map[string]bool{
 
 // Config holds deduplication settings.
 type Config struct {
-	Threshold    int  // max hash distance to consider "duplicate" (lower = stricter)
-	Recursive    bool // scan subdirectories
-	DryRun       bool // don't delete, just report
-	ShowProgress bool // display progress during per-file preparation
+	Threshold     int    // max hash distance to consider "duplicate" (lower = stricter)
+	Recursive     bool   // scan subdirectories
+	DryRun        bool   // don't delete, just report
+	ShowProgress  bool   // display progress during per-file preparation
+	NoCache       bool   // disable hash cache (always recompute)
+	CacheDir      string // directory for the hash cache DB (default: <inputDir>/.gtoh_cache)
+	MaxDecodeMB   int    // max file size in MB to attempt image decoding (0 = unlimited)
+	DecodeWorkers int    // max concurrent image decoders (0 = unlimited)
 }
 
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Threshold:    10, // both pHash and dHash must be <= this
-		Recursive:    true,
-		DryRun:       true,
-		ShowProgress: false,
+		Threshold:   10, // both pHash and dHash must be <= this
+		Recursive:   true,
+		DryRun:      true,
+		MaxDecodeMB: 500,
 	}
 }
 
@@ -81,18 +85,40 @@ func Run(rootDir string, cfg Config) (*Result, error) {
 		return nil, err
 	}
 
-	entries, errors := prepareEntries(imagePaths, cfg.ShowProgress)
+	// Open hash cache unless disabled.
+	var cache *hashcache.Cache
+	if !cfg.NoCache {
+		cacheDir := cfg.CacheDir
+		if cacheDir == "" {
+			cacheDir = filepath.Join(rootDir, ".gtoh_cache")
+		}
+		dbPath := filepath.Join(cacheDir, "dedup_hashes.db")
+		cache, err = hashcache.Open(dbPath)
+		if err != nil {
+			// Non-fatal: proceed without cache.
+			progress.Warning("hash cache unavailable: %v", err)
+			cache = nil
+		} else {
+			defer cache.Close()
+		}
+	}
 
-	// Step 4: group duplicates — BOTH pHash AND dHash must be within threshold
+	entries, errors := prepareEntries(imagePaths, cfg.ShowProgress, cache, cfg.MaxDecodeMB, cfg.DecodeWorkers)
+
+	// Step 4: group duplicates using pHash bucket pre-filtering (O(n·k)).
 	uf := newUnionFind(len(entries))
-	for i := 0; i < len(entries); i++ {
-		for j := i + 1; j < len(entries); j++ {
-			pDist, _ := goimagehash.NewImageHash(entries[i].phash, goimagehash.PHash).Distance(
-				goimagehash.NewImageHash(entries[j].phash, goimagehash.PHash))
-			dDist, _ := goimagehash.NewImageHash(entries[i].dhash, goimagehash.DHash).Distance(
-				goimagehash.NewImageHash(entries[j].dhash, goimagehash.DHash))
-			if pDist <= cfg.Threshold && dDist <= cfg.Threshold {
-				uf.union(i, j)
+	buckets := buildBuckets(entries, 16)
+	for _, indices := range buckets {
+		for a := 0; a < len(indices); a++ {
+			for b := a + 1; b < len(indices); b++ {
+				i, j := indices[a], indices[b]
+				pDist, _ := goimagehash.NewImageHash(entries[i].phash, goimagehash.PHash).Distance(
+					goimagehash.NewImageHash(entries[j].phash, goimagehash.PHash))
+				dDist, _ := goimagehash.NewImageHash(entries[i].dhash, goimagehash.DHash).Distance(
+					goimagehash.NewImageHash(entries[j].dhash, goimagehash.DHash))
+				if pDist <= cfg.Threshold && dDist <= cfg.Threshold {
+					uf.union(i, j)
+				}
 			}
 		}
 	}
@@ -189,42 +215,32 @@ func collectImagePaths(rootDir string, recursive bool) ([]string, error) {
 	return imagePaths, nil
 }
 
-func prepareEntries(imagePaths []string, showProgress bool) ([]preparedEntry, []FileError) {
+func prepareEntries(imagePaths []string, showProgress bool, cache *hashcache.Cache, maxDecodeMB int, decodeWorkers int) ([]preparedEntry, []FileError) {
 	if len(imagePaths) == 0 {
 		return nil, nil
 	}
 
-	workers := runtime.NumCPU()
-	if workers > 8 {
-		workers = 8
-	}
-	if workers < 1 {
-		workers = 1
+	// Build semaphore to cap concurrent image decodes.
+	// A nil sem means no limit (decodeWorkers <= 0).
+	var sem chan struct{}
+	if decodeWorkers > 0 {
+		sem = make(chan struct{}, decodeWorkers)
 	}
 
 	results := make([]preparedResult, len(imagePaths))
-	var wg sync.WaitGroup
 	var completed atomic.Int64
 	reporter := progress.NewReporter(len(imagePaths), showProgress)
 	defer reporter.Close()
 
-	jobCh := make(chan int, workers)
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for idx := range jobCh {
-				results[idx] = prepareEntry(imagePaths[idx])
-				reporter.Update(int(completed.Add(1)))
-			}
-		}()
+	indices := make([]int, len(imagePaths))
+	for i := range indices {
+		indices[i] = i
 	}
-
-	for idx := range imagePaths {
-		jobCh <- idx
-	}
-	close(jobCh)
-	wg.Wait()
+	_ = workerpool.Run(indices, workerpool.DefaultWorkers(), func(idx int) error {
+		results[idx] = prepareEntry(imagePaths[idx], cache, maxDecodeMB, sem)
+		reporter.Update(int(completed.Add(1)))
+		return nil
+	})
 
 	entries := make([]preparedEntry, 0, len(results))
 	errors := make([]FileError, 0)
@@ -241,10 +257,35 @@ func prepareEntries(imagePaths []string, showProgress bool) ([]preparedEntry, []
 	return entries, errors
 }
 
-func prepareEntry(path string) preparedResult {
+func prepareEntry(path string, cache *hashcache.Cache, maxDecodeMB int, sem chan struct{}) preparedResult {
 	info, err := os.Stat(path)
 	if err != nil {
 		return preparedResult{err: &FileError{Path: path, Error: err.Error()}}
+	}
+
+	// Big-image memory guard.
+	if maxDecodeMB > 0 && info.Size() > int64(maxDecodeMB)*1024*1024 {
+		return preparedResult{err: &FileError{Path: path, Error: "oversized: file too large to decode"}}
+	}
+
+	mtime := info.ModTime().Unix()
+	size := info.Size()
+
+	// Check hash cache.
+	if cache != nil {
+		if entry, ok := cache.Get(path, mtime, size); ok {
+			// Retrieve width/height from stat approximation — we don't store them,
+			// so set to 0; they are only used for "keep largest" heuristic.
+			return preparedResult{
+				ok: true,
+				entry: preparedEntry{
+					path:  path,
+					size:  size,
+					phash: entry.PHash,
+					dhash: entry.DHash,
+				},
+			}
+		}
 	}
 
 	f, err := os.Open(path)
@@ -252,8 +293,15 @@ func prepareEntry(path string) preparedResult {
 		return preparedResult{err: &FileError{Path: path, Error: err.Error()}}
 	}
 
+	// Acquire decode semaphore — limits peak concurrent decoded images in memory.
+	if sem != nil {
+		sem <- struct{}{}
+	}
 	img, _, err := image.Decode(f)
 	f.Close()
+	if sem != nil {
+		<-sem
+	}
 	if err != nil {
 		return preparedResult{err: &FileError{Path: path, Error: "decode: " + err.Error()}}
 	}
@@ -268,17 +316,35 @@ func prepareEntry(path string) preparedResult {
 	}
 
 	bounds := img.Bounds()
+
+	if cache != nil {
+		_ = cache.Set(path, mtime, size, ph.GetHash(), dh.GetHash())
+	}
+
 	return preparedResult{
 		ok: true,
 		entry: preparedEntry{
 			path:   path,
-			size:   info.Size(),
+			size:   size,
 			width:  bounds.Dx(),
 			height: bounds.Dy(),
 			phash:  ph.GetHash(),
 			dhash:  dh.GetHash(),
 		},
 	}
+}
+
+// buildBuckets groups entry indices by the top `bits` bits of their pHash.
+// Only entries in the same bucket need to be compared, reducing O(n²) to O(n·k)
+// where k is the average bucket size.
+func buildBuckets(entries []preparedEntry, bits int) map[uint64][]int {
+	shift := uint(64 - bits)
+	buckets := make(map[uint64][]int, len(entries))
+	for i, e := range entries {
+		key := e.phash >> shift
+		buckets[key] = append(buckets[key], i)
+	}
+	return buckets
 }
 
 // unionFind implements disjoint-set for grouping duplicates.

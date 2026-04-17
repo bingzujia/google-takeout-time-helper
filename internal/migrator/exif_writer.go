@@ -36,6 +36,20 @@ func (w *ExifWriter) WriteGPS(filePath string, lat, lon float64) error {
 	return nil
 }
 
+// WriteCreateAndModifyDate writes CreateDate and FileModifyDate to a file.
+// It does NOT write DateTimeOriginal; use WriteTimestamp for that.
+func (w *ExifWriter) WriteCreateAndModifyDate(filePath string, t time.Time) error {
+	exifTime := t.Format("2006:01:02 15:04:05")
+	cmd := exec.Command("exiftool", "-ignoreMinorErrors", "-overwrite_original",
+		"-CreateDate="+exifTime,
+		"-FileModifyDate="+exifTime,
+		filePath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("exiftool write create/modify date: %w: %s", err, string(out))
+	}
+	return nil
+}
+
 // WriteAll writes timestamp and optionally GPS to a file.
 func (w *ExifWriter) WriteAll(filePath string, t time.Time, hasGPS bool, lat, lon float64) error {
 	exifTime := t.Format("2006:01:02 15:04:05")

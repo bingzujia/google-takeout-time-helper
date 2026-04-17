@@ -144,7 +144,7 @@ func TestParseChromaSubsampling(t *testing.T) {
 func TestDetectChromaSubsamplingNonJPEG(t *testing.T) {
 	formats := []string{"png", "bmp", "gif", "tiff", "webp"}
 	for _, fmt := range formats {
-		got := detectChromaSubsampling("any.file", fmt)
+		got := detectChromaSubsampling("any.file", fmt, nil)
 		if got != "420" {
 			t.Errorf("detectChromaSubsampling for format %q = %q, want 420", fmt, got)
 		}

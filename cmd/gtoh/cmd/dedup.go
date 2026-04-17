@@ -6,39 +6,51 @@ import (
 	"path/filepath"
 
 	"github.com/bingzujia/g_photo_take_out_helper/internal/dedup"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
 	"github.com/spf13/cobra"
 )
 
 var dedupCmd = &cobra.Command{
-	Use:   "dedup <input_dir>",
+	Use:   "dedup",
 	Short: "Find and group duplicate images in a directory",
-	Long: `Scan the top-level image files in <input_dir> and move each group of
+	Long: `Scan the top-level image files in --input-dir and move each group of
 duplicates into <input_dir>/dedup/group-001/, group-002/, etc.
 
-Only immediate (non-recursive) contents of <input_dir> are scanned.
+Only immediate (non-recursive) contents of --input-dir are scanned.
 Supported image formats: jpg, jpeg, png, gif, bmp, tiff, tif, webp, heic, heif.
 
 Use --dry-run to preview what would be moved without touching any files.`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.NoArgs,
 	RunE: runDedup,
 }
 
 var (
-	dedupDryRun    bool
-	dedupThreshold int
+	dedupDryRun        bool
+	dedupThreshold     int
+	dedupNoCache       bool
+	dedupCacheDir      string
+	dedupMaxDecodeMB   int
+	dedupDecodeWorkers int
+	dedupInputDir      string
 )
 
 func init() {
 	dedupCmd.Flags().BoolVar(&dedupDryRun, "dry-run", false, "preview duplicate groups without moving files")
 	dedupCmd.Flags().IntVar(&dedupThreshold, "threshold", 10, "max perceptual hash distance to consider images as duplicates")
+	dedupCmd.Flags().BoolVar(&dedupNoCache, "no-cache", false, "disable hash cache, always recompute hashes from disk")
+	dedupCmd.Flags().StringVar(&dedupCacheDir, "cache-dir", "", "directory for hash cache DB (default: <input_dir>/.gtoh_cache)")
+	dedupCmd.Flags().IntVar(&dedupMaxDecodeMB, "max-decode-mb", 500, "skip images larger than this size (MB) to prevent OOM")
+	dedupCmd.Flags().IntVar(&dedupDecodeWorkers, "decode-workers", 0, "max concurrent image decodes (0 = unlimited)")
+	dedupCmd.Flags().StringVar(&dedupInputDir, "input-dir", "", "input directory to scan for duplicates")
+	_ = dedupCmd.MarkFlagRequired("input-dir")
 	rootCmd.AddCommand(dedupCmd)
 }
 
-func runDedup(_ *cobra.Command, args []string) error {
-	inputDir := args[0]
+func runDedup(_ *cobra.Command, _ []string) error {
+	inputDir := dedupInputDir
 
-	// Task 3.2: validate input directory
+	// validate input directory
 	if _, err := os.Stat(inputDir); os.IsNotExist(err) {
 		return fmt.Errorf("input directory does not exist: %s", inputDir)
 	}
@@ -54,15 +66,25 @@ func runDedup(_ *cobra.Command, args []string) error {
 
 	// Task 2.1: call dedup.Run with Recursive: false (top-level only)
 	cfg := dedup.Config{
-		Threshold:    dedupThreshold,
-		Recursive:    false,
-		DryRun:       dedupDryRun,
-		ShowProgress: true,
+		Threshold:     dedupThreshold,
+		Recursive:     false,
+		DryRun:        dedupDryRun,
+		ShowProgress:  true,
+		NoCache:       dedupNoCache,
+		CacheDir:      dedupCacheDir,
+		MaxDecodeMB:   dedupMaxDecodeMB,
+		DecodeWorkers: dedupDecodeWorkers,
 	}
 	result, err := dedup.Run(inputDir, cfg)
 	if err != nil {
 		return fmt.Errorf("scan failed: %w", err)
 	}
+
+	logger, logErr := logutil.OpenLog(inputDir, "dedup", dedupDryRun)
+	if logErr != nil {
+		return fmt.Errorf("open log: %w", logErr)
+	}
+	defer logger.Close()
 
 	// Task 3.3: print per-file warnings without stopping
 	for _, fe := range result.Errors {
@@ -92,8 +114,10 @@ func runDedup(_ *cobra.Command, args []string) error {
 					return fmt.Errorf("create group dir %s: %w", groupDir, err)
 				}
 				if err := os.Rename(f.Path, dest); err != nil {
+					logger.Fail("move", f.Path, err.Error())
 					return fmt.Errorf("move %s → %s: %w", f.Path, dest, err)
 				}
+				logger.Info(groupName, f.Path)
 				totalMoved++
 			}
 		}
@@ -112,6 +136,9 @@ func runDedup(_ *cobra.Command, args []string) error {
 		fmt.Printf("  Would move:       %d file(s)\n", result.TotalDupes+result.TotalGroups)
 	} else {
 		fmt.Printf("  Files moved:      %d\n", totalMoved)
+	}
+	if !dedupDryRun {
+		fmt.Printf("  Log:              %s\n", logger.Path())
 	}
 
 	return nil

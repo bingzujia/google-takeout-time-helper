@@ -1,28 +1,19 @@
 package classifier
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
+	"github.com/bingzujia/g_photo_take_out_helper/internal/destlocker"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/exifrunner"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/fileutil"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/organizer"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
-)
-
-var (
-	exiftoolPathOnce  sync.Once
-	exiftoolPath      string
-	exiftoolAvailable bool
-	exiftoolWarnOnce  sync.Once
+	"github.com/bingzujia/g_photo_take_out_helper/internal/workerpool"
 )
 
 // Category is the destination bucket for a classified file.
@@ -41,6 +32,7 @@ type Config struct {
 	OutputDir    string
 	DryRun       bool
 	ShowProgress bool
+	Logger       *logutil.Logger // structured log; if nil a Nop logger is used
 }
 
 // Result holds counts after a Run.
@@ -57,6 +49,10 @@ type Result struct {
 func Run(cfg Config) (Result, error) {
 	var result Result
 
+	if cfg.Logger == nil {
+		cfg.Logger = logutil.Nop()
+	}
+
 	files, err := scanEligibleFiles(cfg.InputDir)
 	if err != nil {
 		return result, fmt.Errorf("scan input dir: %w", err)
@@ -65,7 +61,24 @@ func Run(cfg Config) (Result, error) {
 		return result, nil
 	}
 
-	return runParallel(files, cfg)
+	// Pre-query Make/Model for all files in a single batched exiftool call.
+	// Files that can't be classified by filename will use this map as fallback.
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = f.Path
+	}
+	exifResults, _ := exifrunner.BatchQuery(paths, []string{"Make", "Model"})
+	exifMap := make(map[string]exifDeviceOutput, len(files))
+	for i, path := range paths {
+		if exifResults != nil && i < len(exifResults) && exifResults[i] != nil {
+			exifMap[path] = exifDeviceOutput{
+				Make:  exifResults[i]["Make"],
+				Model: exifResults[i]["Model"],
+			}
+		}
+	}
+
+	return runParallel(files, cfg, exifMap)
 }
 
 type fileJob struct {
@@ -92,68 +105,44 @@ func scanEligibleFiles(inputDir string) ([]fileJob, error) {
 	return files, nil
 }
 
-func runParallel(files []fileJob, cfg Config) (Result, error) {
+func runParallel(files []fileJob, cfg Config, exifMap map[string]exifDeviceOutput) (Result, error) {
 	var result Result
-
-	workers := runtime.NumCPU()
-	if workers > 8 {
-		workers = 8
-	}
-	if workers < 1 {
-		workers = 1
-	}
-
-	var wg sync.WaitGroup
 	var resultMu sync.Mutex
-	var completed atomic.Int64
-	var firstErr error
-	var errOnce sync.Once
-	locker := newDestinationLocker()
+	locker := destlocker.New()
 
 	reporter := progress.NewReporter(len(files), cfg.ShowProgress)
 	defer reporter.Close()
 
-	jobCh := make(chan fileJob, workers)
+	var done int
+	var doneMu sync.Mutex
 
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobCh {
-				if err := processFile(job, cfg, &result, &resultMu, locker); err != nil {
-					errOnce.Do(func() {
-						firstErr = err
-					})
-				}
-				reporter.Update(int(completed.Add(1)))
-			}
-		}()
-	}
+	err := workerpool.Run(files, workerpool.DefaultWorkers(), func(job fileJob) error {
+		err := processFile(job, cfg, exifMap, &result, &resultMu, locker)
+		doneMu.Lock()
+		done++
+		reporter.Update(done)
+		doneMu.Unlock()
+		return err
+	})
 
-	for _, job := range files {
-		jobCh <- job
-	}
-	close(jobCh)
-	wg.Wait()
-
-	return result, firstErr
+	return result, err
 }
 
-func processFile(job fileJob, cfg Config, result *Result, resultMu *sync.Mutex, locker *destinationLocker) error {
+func processFile(job fileJob, cfg Config, exifMap map[string]exifDeviceOutput, result *Result, resultMu *sync.Mutex, locker *destlocker.Locker) error {
 	cat, ok := classifyFile(job.Name)
 	if !ok {
-		hasCam, _ := exiftoolFallback(job.Path)
-		if hasCam {
+		if hasCam := exifMapFallback(job.Path, exifMap); hasCam {
 			cat = CategorySeemsCamera
 		} else {
 			resultMu.Lock()
 			result.Skipped++
 			resultMu.Unlock()
+			cfg.Logger.Skip("no-category-match", job.Path)
 			return nil
 		}
 	}
 
-	return moveToCategory(job.Path, job.Name, cfg.OutputDir, cat, cfg.DryRun, result, resultMu, locker)
+	return moveToCategory(job.Path, job.Name, cfg.OutputDir, cat, cfg.DryRun, result, resultMu, locker, cfg.Logger)
 }
 
 // classifyFile maps organizer filename rules to a Category.
@@ -180,36 +169,19 @@ type exifDeviceOutput struct {
 	Model string `json:"Model"`
 }
 
-// exiftoolFallback returns true if the file's EXIF Make or Model tag is non-empty.
-// Returns (false, nil) gracefully when exiftool is not installed or the command fails.
-func exiftoolFallback(path string) (bool, error) {
-	cmdPath, ok := lookupExiftool()
+// exifMapFallback returns true if the pre-queried exif map has a non-empty Make or Model for path.
+func exifMapFallback(path string, exifMap map[string]exifDeviceOutput) bool {
+	d, ok := exifMap[path]
 	if !ok {
-		exiftoolWarnOnce.Do(func() {
-			progress.Warning("exiftool not found, skipping EXIF fallback")
-		})
-		return false, nil
+		return false
 	}
-
-	cmd := exec.Command(cmdPath, "-Make", "-Model", "-j", path)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return false, nil
-	}
-
-	var results []exifDeviceOutput
-	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil || len(results) == 0 {
-		return false, nil
-	}
-	r := results[0]
-	return strings.TrimSpace(r.Make) != "" || strings.TrimSpace(r.Model) != "", nil
+	return strings.TrimSpace(d.Make) != "" || strings.TrimSpace(d.Model) != ""
 }
 
 // moveToCategory moves src into <outputDir>/<category>/, respecting dry-run mode.
-func moveToCategory(src, name, outputDir string, cat Category, dryRun bool, result *Result, resultMu *sync.Mutex, locker *destinationLocker) error {
+func moveToCategory(src, name, outputDir string, cat Category, dryRun bool, result *Result, resultMu *sync.Mutex, locker *destlocker.Locker, logger *logutil.Logger) error {
 	destDir := filepath.Join(outputDir, string(cat))
-
+	destPath := fileutil.ResolveDestPath(destDir, name)
 	if dryRun {
 		progress.Info("  [dry-run] %s  →  %s/%s", src, string(cat), name)
 		resultMu.Lock()
@@ -225,43 +197,22 @@ func moveToCategory(src, name, outputDir string, cat Category, dryRun bool, resu
 		return fmt.Errorf("create dest dir %s: %w", destDir, err)
 	}
 
-	destPath := resolveDestPath(destDir, name)
 	if err := os.Rename(src, destPath); err != nil {
 		// Try copy+delete for cross-device moves.
-		if err2 := copyFile(src, destPath); err2 != nil {
+		if err2 := fileutil.CopyFile(src, destPath); err2 != nil {
 			resultMu.Lock()
 			result.Skipped++
 			resultMu.Unlock()
+			logger.Fail("move-failed", src, err2.Error())
 			return nil
 		}
 		os.Remove(src)
 	}
+	logger.Info(string(cat), src)
 	resultMu.Lock()
 	incrementResult(result, cat)
 	resultMu.Unlock()
 	return nil
-}
-
-type destinationLocker struct {
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
-}
-
-func newDestinationLocker() *destinationLocker {
-	return &destinationLocker{locks: make(map[string]*sync.Mutex)}
-}
-
-func (d *destinationLocker) Lock(destDir string) func() {
-	d.mu.Lock()
-	lock, ok := d.locks[destDir]
-	if !ok {
-		lock = &sync.Mutex{}
-		d.locks[destDir] = lock
-	}
-	d.mu.Unlock()
-
-	lock.Lock()
-	return lock.Unlock
 }
 
 func incrementResult(r *Result, cat Category) {
@@ -275,53 +226,4 @@ func incrementResult(r *Result, cat Category) {
 	case CategorySeemsCamera:
 		r.SeemsCamera++
 	}
-}
-
-func resolveDestPath(destDir, name string) string {
-	target := filepath.Join(destDir, name)
-	if _, err := os.Stat(target); os.IsNotExist(err) {
-		return target
-	}
-	ext := filepath.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
-	suffix := time.Now().Format("20060102150405")
-	return filepath.Join(destDir, fmt.Sprintf("%s_%s%s", stem, suffix, ext))
-}
-
-func copyFile(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err = io.Copy(out, in); err != nil {
-		return err
-	}
-	if err = out.Close(); err != nil {
-		return err
-	}
-	return os.Chtimes(dst, info.ModTime(), info.ModTime())
-}
-
-func lookupExiftool() (string, bool) {
-	exiftoolPathOnce.Do(func() {
-		path, err := exec.LookPath("exiftool")
-		if err == nil {
-			exiftoolPath = path
-			exiftoolAvailable = true
-		}
-	})
-	return exiftoolPath, exiftoolAvailable
 }

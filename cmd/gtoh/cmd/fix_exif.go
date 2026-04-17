@@ -11,25 +11,26 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/migrator"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/parser"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
 	"github.com/spf13/cobra"
 )
 
-var fixExifDatesCmd = &cobra.Command{
-	Use:   "fix-exif-dates",
+var fixExifCmd = &cobra.Command{
+	Use:   "fix-exif",
 	Short: "Sync DateTimeOriginal → CreateDate & ModifyDate using exiftool",
-	Long: `fix-exif-dates reads the DateTimeOriginal EXIF field from media files in the
+	Long: `fix-exif reads the DateTimeOriginal EXIF field from media files in the
 given directory (first level only, non-recursive) and writes the same value to
 CreateDate and ModifyDate, using exiftool.
 
 Requires exiftool to be installed and available in PATH.`,
-	RunE: runFixExifDates,
+	RunE: runFixExif,
 }
 
-var fixExifDatesDir string
-var fixExifDatesDryRun bool
+var fixExifDir string
+var fixExifDryRun bool
 
 // mediaExts is the whitelist of recognised media file extensions (lowercase).
 var mediaExts = map[string]bool{
@@ -47,29 +48,30 @@ var mediaExts = map[string]bool{
 }
 
 func init() {
-	fixExifDatesCmd.Flags().StringVar(&fixExifDatesDir, "dir", ".", "target directory")
-	fixExifDatesCmd.Flags().BoolVar(&fixExifDatesDryRun, "dry-run", false, "preview only, do not modify files")
-	rootCmd.AddCommand(fixExifDatesCmd)
+	fixExifCmd.Flags().StringVar(&fixExifDir, "input-dir", "", "target directory")
+	fixExifCmd.Flags().BoolVar(&fixExifDryRun, "dry-run", false, "preview only, do not modify files")
+	_ = fixExifCmd.MarkFlagRequired("input-dir")
+	rootCmd.AddCommand(fixExifCmd)
 }
 
-func runFixExifDates(_ *cobra.Command, _ []string) error {
+func runFixExif(_ *cobra.Command, _ []string) error {
 	if _, err := exec.LookPath("exiftool"); err != nil {
 		return fmt.Errorf("exiftool not found in PATH: install exiftool and retry")
 	}
 
-	mediaFiles, skipped, err := collectFixExifMediaFiles(fixExifDatesDir)
+	mediaFiles, skipped, err := collectFixExifMediaFiles(fixExifDir)
 	if err != nil {
 		return err
 	}
 
 	if len(mediaFiles) == 0 {
-		progress.Info("No media files found in %q", fixExifDatesDir)
+		progress.Info("No media files found in %q", fixExifDir)
 		progress.Success("Done. Processed: 0, Failed: 0, Skipped: %d", skipped)
 		return nil
 	}
 
 	// Dry-run: resolve timestamp per file and print it.
-	if fixExifDatesDryRun {
+	if fixExifDryRun {
 		runFixExifFiles(mediaFiles, fixExifRunOptions{
 			DryRun:           true,
 			ResolveTimestamp: resolveTimestamp,
@@ -81,17 +83,15 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Open log file for failures.
-	logPath := filepath.Join(fixExifDatesDir, "gtoh-fix-exif.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Open log file for structured logging.
+	logger, err := logutil.OpenLog(fixExifDir, "fix-exif", false)
 	if err != nil {
-		return fmt.Errorf("opening log file %q: %w", logPath, err)
+		return fmt.Errorf("opening log file: %w", err)
 	}
-	defer logFile.Close()
+	defer logger.Close()
 
 	writeLog := func(filePath, detail string) {
-		ts := time.Now().Format("2006-01-02 15:04:05")
-		fmt.Fprintf(logFile, "[%s] FAIL write DateTimeOriginal/FileModifyDate: %s (%s)\n", ts, filePath, detail)
+		logger.Fail("write-exif", filePath, detail)
 	}
 
 	processed, failed := 0, 0
@@ -108,7 +108,7 @@ func runFixExifDates(_ *cobra.Command, _ []string) error {
 
 	if failed > 0 {
 		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
-		progress.Info("Log: %s", logPath)
+		progress.Info("Log: %s", logger.Path())
 	} else {
 		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
 	}

@@ -90,12 +90,16 @@ func buildHeifEncArgs(srcPath, dstPath string, opts EncodeOptions) []string {
 }
 
 // detectChromaSubsampling returns the chroma subsampling value for srcPath.
-// For JPEG sources it calls exiftool to read the YCbCrSubSampling tag and maps
-// the result to "420", "422", or "444". Non-JPEG formats and any parse failure
-// fall back to "420".
-func detectChromaSubsampling(srcPath, format string) string {
+// For JPEG sources it first checks chromaMap (pre-queried batch result), then falls back
+// to calling exiftool directly. Non-JPEG formats and any parse failure fall back to "420".
+func detectChromaSubsampling(srcPath, format string, chromaMap map[string]string) string {
 	if format != "jpeg" {
 		return "420"
+	}
+	if chromaMap != nil {
+		if v, ok := chromaMap[srcPath]; ok {
+			return parseChromaSubsampling(`[{"YCbCrSubSampling":"` + v + `"}]`)
+		}
 	}
 	out, err := exec.Command("exiftool", "-j", "-YCbCrSubSampling", srcPath).Output()
 	if err != nil {

@@ -287,7 +287,7 @@ func TestJSONForFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			photoPath := filepath.Join(tmpDir, tt.photoName)
-			result := JSONForFile(photoPath)
+			result := JSONForFile(photoPath, nil)
 
 			if tt.expectFound {
 				if result == nil {

@@ -105,7 +105,7 @@ func (c *Converter) Convert(srcPath, dstPath string) error {
 		return &Error{Kind: ErrorKindDecode, Path: srcPath, Err: err}
 	}
 
-	decoded, err := decodeSourceImage(srcPath)
+	decoded, err := decodeSourceImage(srcPath, nil)
 	if err != nil {
 		return &Error{Kind: ErrorKindDecode, Path: srcPath, Err: err}
 	}
@@ -148,7 +148,7 @@ func (c *Converter) convertDecoded(srcPath, dstPath string, srcInfo os.FileInfo,
 
 // decodeSourceImage opens srcPath, confirms it is not already HEIC/HEIF, and uses
 // image.DecodeConfig to read the format and dimensions without loading the full pixel data.
-func decodeSourceImage(srcPath string) (*decodedSource, error) {
+func decodeSourceImage(srcPath string, chromaMap map[string]string) (*decodedSource, error) {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return nil, err
@@ -183,7 +183,7 @@ func decodeSourceImage(srcPath string) (*decodedSource, error) {
 		format:            normalizedFormat,
 		canonicalExt:      canonicalExtensionForFormat(normalizedFormat),
 		pixelCount:        int64(cfg.Width) * int64(cfg.Height),
-		chromaSubsampling: detectChromaSubsampling(srcPath, normalizedFormat),
+		chromaSubsampling: detectChromaSubsampling(srcPath, normalizedFormat, chromaMap),
 	}, nil
 }
 
