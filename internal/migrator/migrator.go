@@ -577,8 +577,15 @@ func checkOutputDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("read output dir: %w", err)
 	}
-	if len(entries) > 0 {
-		return fmt.Errorf("output directory is not empty (%d entries), please clean it first", len(entries))
+	// Count non-gtoh-log entries (gtoh-log is created by the tool itself)
+	userEntries := 0
+	for _, e := range entries {
+		if e.Name() != "gtoh-log" {
+			userEntries++
+		}
+	}
+	if userEntries > 0 {
+		return fmt.Errorf("output directory is not empty (%d entries), please clean it first", userEntries)
 	}
 	return nil
 }
