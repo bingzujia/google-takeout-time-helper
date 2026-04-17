@@ -1,13 +1,10 @@
 package organizer
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/fileutil"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/mediatype"
 )
 
@@ -19,21 +16,6 @@ const (
 	ModeScreenshot Mode = "screenshot"
 	ModeWechat     Mode = "wechat"
 )
-
-// Config holds organizer settings.
-type Config struct {
-	Mode       Mode
-	SourceDirs []string
-	DestDir    string
-	DryRun     bool
-	Recursive  bool
-}
-
-// Result holds counts after a Run.
-type Result struct {
-	Moved   int
-	Skipped int
-}
 
 var cameraPrefixes = []string{"WP_", "IMG_", "IMG", "VID_", "VID", "P_", "PXL_", "DSC_"}
 var cameraDatePattern = regexp.MustCompile(`^\d{8}_\d{6}`)
@@ -47,45 +29,6 @@ func Classify(name string) (Mode, bool) {
 		}
 	}
 	return "", false
-}
-
-// Run executes the organizer.
-func Run(cfg Config) (Result, error) {
-	if err := os.MkdirAll(cfg.DestDir, 0o755); err != nil {
-		return Result{}, fmt.Errorf("create dest dir: %w", err)
-	}
-
-	var result Result
-	for _, srcDir := range cfg.SourceDirs {
-		if err := walkDir(srcDir, cfg, &result); err != nil {
-			return result, err
-		}
-	}
-	return result, nil
-}
-
-func walkDir(dir string, cfg Config, result *Result) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		fullPath := filepath.Join(dir, e.Name())
-		if e.IsDir() {
-			if cfg.Recursive {
-				if err := walkDir(fullPath, cfg, result); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-		if matches(e.Name(), cfg.Mode) {
-			if err := moveFile(fullPath, e.Name(), cfg, result); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func matches(name string, mode Mode) bool {
@@ -116,25 +59,5 @@ func matches(name string, mode Mode) bool {
 		return strings.HasPrefix(lower, "mmexport")
 	}
 	return false
-}
-
-func moveFile(src, name string, cfg Config, result *Result) error {
-	destPath := fileutil.ResolveDestPath(cfg.DestDir, name)
-
-	if cfg.DryRun {
-		result.Moved++
-		return nil
-	}
-
-	if err := os.Rename(src, destPath); err != nil {
-		// Try copy+delete for cross-device moves
-		if err2 := fileutil.CopyFile(src, destPath); err2 != nil {
-			result.Skipped++
-			return nil
-		}
-		os.Remove(src)
-	}
-	result.Moved++
-	return nil
 }
 

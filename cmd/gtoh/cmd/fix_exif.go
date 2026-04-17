@@ -59,7 +59,7 @@ func runFixExif(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("exiftool not found in PATH: install exiftool and retry")
 	}
 
-	mediaFiles, skipped, err := collectFixExifMediaFiles(fixExifDir)
+	mediaFiles, skipped, err := collectMediaFiles(fixExifDir)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ type fixExifRunOptions struct {
 	ShowProgress     bool
 }
 
-func collectFixExifMediaFiles(dir string) ([]string, int, error) {
+func collectMediaFiles(dir string) ([]string, int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading directory %q: %w", dir, err)

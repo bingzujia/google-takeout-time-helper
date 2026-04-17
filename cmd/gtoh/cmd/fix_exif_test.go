@@ -43,7 +43,7 @@ func TestResolveTimestamp_NoTimestamp(t *testing.T) {
 	}
 }
 
-func TestCollectFixExifMediaFiles(t *testing.T) {
+func TestCollectMediaFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "photo.jpg"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
@@ -58,9 +58,9 @@ func TestCollectFixExifMediaFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files, skipped, err := collectFixExifMediaFiles(dir)
+	files, skipped, err := collectMediaFiles(dir)
 	if err != nil {
-		t.Fatalf("collectFixExifMediaFiles() error = %v", err)
+		t.Fatalf("collectMediaFiles() error = %v", err)
 	}
 	if skipped != 1 {
 		t.Fatalf("skipped = %d, want 1", skipped)
@@ -70,6 +70,30 @@ func TestCollectFixExifMediaFiles(t *testing.T) {
 	}
 	if got, want := filepath.Base(files[0]), "photo.jpg"; got != want {
 		t.Fatalf("files[0] = %q, want %q", got, want)
+	}
+}
+
+func TestCollectMediaFiles_UppercaseExtension(t *testing.T) {
+	dir := t.TempDir()
+	// Uppercase extensions must be recognised the same as lowercase.
+	for _, name := range []string{"PHOTO.JPG", "video.MP4", "image.HEIC"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "doc.PDF"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, skipped, err := collectMediaFiles(dir)
+	if err != nil {
+		t.Fatalf("collectMediaFiles() error = %v", err)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (doc.PDF)", skipped)
+	}
+	if len(files) != 3 {
+		t.Fatalf("len(files) = %d, want 3", len(files))
 	}
 }
 
