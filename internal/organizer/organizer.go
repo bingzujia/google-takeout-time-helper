@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/mediatype"
+	"github.com/bingzujia/google-takeout-time-helper/internal/mediatype"
 )
 
 // Mode determines which files to organize.

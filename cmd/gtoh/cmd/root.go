@@ -7,9 +7,9 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "gtoh",
+	Use:   "takeout-helper",
 	Short: "Google Takeout helper - migrate photo metadata",
-	Long:  `gtoh is a cross-platform CLI tool to fix timestamps and organize photos from Google Takeout.`,
+	Long:  `takeout-helper is a cross-platform CLI tool to fix timestamps and organize photos from Google Takeout.`,
 }
 
 // Execute runs the root command.

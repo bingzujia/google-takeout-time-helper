@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/workerpool"
+	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
 )
 
 func TestRunProcessesAllJobs(t *testing.T) {

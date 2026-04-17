@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/heicconv"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
+	"github.com/bingzujia/google-takeout-time-helper/internal/heicconv"
+	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
 	"github.com/spf13/cobra"
 )
 

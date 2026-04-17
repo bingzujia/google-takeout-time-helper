@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/fileutil"
+	"github.com/bingzujia/google-takeout-time-helper/internal/fileutil"
 )
 
 func TestCopyFile(t *testing.T) {

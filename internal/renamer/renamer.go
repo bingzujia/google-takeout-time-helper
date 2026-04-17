@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/mediatype"
+	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
+	"github.com/bingzujia/google-takeout-time-helper/internal/mediatype"
 )
 
 // Config holds renamer settings.

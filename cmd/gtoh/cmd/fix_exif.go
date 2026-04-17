@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/migrator"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/parser"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
+	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
+	"github.com/bingzujia/google-takeout-time-helper/internal/migrator"
+	"github.com/bingzujia/google-takeout-time-helper/internal/parser"
+	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
 	"github.com/spf13/cobra"
 )
 

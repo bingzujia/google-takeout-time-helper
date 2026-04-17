@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/parser"
+	"github.com/bingzujia/google-takeout-time-helper/internal/parser"
 )
 
 // maxTakeoutFilenameLength is Google Takeout's filename length limit.

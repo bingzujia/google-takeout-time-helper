@@ -10,11 +10,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/destlocker"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/exifrunner"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/workerpool"
+	"github.com/bingzujia/google-takeout-time-helper/internal/destlocker"
+	"github.com/bingzujia/google-takeout-time-helper/internal/exifrunner"
+	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
+	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
+	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
 )
 
 // Config controls a root-level directory HEIC conversion run.

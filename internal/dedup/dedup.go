@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/hashcache"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/workerpool"
+	"github.com/bingzujia/google-takeout-time-helper/internal/hashcache"
+	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
+	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
 	"github.com/corona10/goimagehash"
 )
 

@@ -1,6 +1,6 @@
 .PHONY: build test lint clean
 
-BINARY_NAME=gtoh
+BINARY_NAME=takeout-helper
 BUILD_DIR=bin
 
 build:

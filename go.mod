@@ -1,4 +1,4 @@
-module github.com/bingzujia/g_photo_take_out_helper
+module github.com/bingzujia/google-takeout-time-helper
 
 go 1.23
 

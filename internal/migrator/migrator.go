@@ -10,13 +10,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/matcher"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/mediatype"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/organizer"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/parser"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/workerpool"
+	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
+	"github.com/bingzujia/google-takeout-time-helper/internal/matcher"
+	"github.com/bingzujia/google-takeout-time-helper/internal/mediatype"
+	"github.com/bingzujia/google-takeout-time-helper/internal/organizer"
+	"github.com/bingzujia/google-takeout-time-helper/internal/parser"
+	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
+	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
 )
 
 // Stats holds processing statistics.

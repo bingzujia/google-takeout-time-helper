@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/destlocker"
+	"github.com/bingzujia/google-takeout-time-helper/internal/destlocker"
 )
 
 func TestLockUnlock(t *testing.T) {

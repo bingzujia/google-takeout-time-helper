@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
-	"github.com/bingzujia/g_photo_take_out_helper/internal/renamer"
+	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
+	"github.com/bingzujia/google-takeout-time-helper/internal/renamer"
 	"github.com/spf13/cobra"
 )
 

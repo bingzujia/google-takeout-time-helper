@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bingzujia/g_photo_take_out_helper/internal/hashcache"
+	"github.com/bingzujia/google-takeout-time-helper/internal/hashcache"
 )
 
 func TestCacheMissAndSet(t *testing.T) {
