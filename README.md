@@ -26,8 +26,8 @@ chmod +x gtoh-darwin-arm64
 mv gtoh-darwin-arm64 /usr/local/bin/gtoh
 ```
 
-> 默认发布的二进制可直接使用 `migrate` / `classify` / `fix-exif-dates` / `dedup`。  
-> 若要使用 `to-heic`，需在系统中安装 **`ffmpeg`**（含 libx265 和 HEIF/HEIC 容器支持）与 **`exiftool`**。
+> 默认发布的二进制可直接使用 `migrate` / `classify` / `fix-exif` / `fix-name` / `dedup` / `rename`。  
+> 若要使用 `convert`，需在系统中安装 **`heif-enc`** 与 **`exiftool`**。
 
 ### 方式二：从源码编译
 
@@ -39,25 +39,24 @@ make build          # 产物：bin/gtoh
 
 ### 可选：启用 HEIC 转换能力
 
-`gtoh to-heic` 使用系统安装的 **`ffmpeg`** 作为 HEIC 编码后端，默认采用 CRF 21（≈ 有损质量 80，`medium` 预设）。超过 4000 万像素的大图会以更严格的参数（`-threads 1`、`-pix_fmt yuv420p`）串行处理，以降低内存峰值。
+`gtoh convert` 使用系统安装的 **`heif-enc`** 作为 HEIC 编码后端，默认 quality 35（0–100 scale，有损）。超过 4000 万像素的大图会串行处理，以降低内存峰值。
 
 安装依赖（Debian / Ubuntu 示例）：
 
 ```bash
-sudo apt-get install -y ffmpeg libimage-exiftool-perl
+sudo apt-get install -y libheif-examples libimage-exiftool-perl
 ```
 
 macOS：
 
 ```bash
-brew install ffmpeg exiftool
+brew install libheif exiftool
 ```
 
-验证 ffmpeg 是否支持 HEIC（需含 `libx265` 编码器与 `heif` 封装器）：
+验证 heif-enc 是否可用：
 
 ```bash
-ffmpeg -encoders 2>/dev/null | grep libx265
-ffmpeg -formats  2>/dev/null | grep heif
+heif-enc --version
 ```
 
 ---
@@ -65,14 +64,16 @@ ffmpeg -formats  2>/dev/null | grep heif
 ## 命令
 
 ```
-gtoh migrate      <input_dir> <output_dir>   # 迁移 Google Takeout 照片
-gtoh classify     <input_dir> <output_dir>   # 按类型分类媒体文件
-gtoh to-heic      <input_dir>                # 将根目录图片原地转换为 HEIC
-gtoh fix-exif-dates --dir <dir>              # 同步 DateTimeOriginal → CreateDate & ModifyDate
-gtoh dedup        <input_dir>                # 检测并整理重复图片
+gtoh migrate        --input-dir <dir> --output-dir <dir>   # 迁移 Google Takeout 照片
+gtoh classify       --input-dir <dir> --output-dir <dir>   # 按类型分类媒体文件
+gtoh convert        --input-dir <dir>                      # 将根目录图片原地转换为 HEIC
+gtoh fix-exif       --input-dir <dir>                      # 同步 DateTimeOriginal → CreateDate & ModifyDate
+gtoh fix-name       --input-dir <dir>                      # 同步文件名时间戳 → DateTimeOriginal, CreateDate & ModifyDate
+gtoh dedup          --input-dir <dir>                      # 检测并整理重复图片
+gtoh rename         --input-dir <dir>                      # 批量重命名照片/视频文件
 ```
 
-`gtoh` 专注于修复 Google Takeout 导出照片的时间戳，并提供分类整理工具。各命令均支持 `--dry-run` 预览模式，不会实际修改文件（`fix-exif-dates` 使用 `--dry-run`）。所有写入 EXIF 元数据的命令均需安装 `exiftool`。
+`gtoh` 专注于修复 Google Takeout 导出照片的时间戳，并提供分类整理工具。各命令均支持 `--dry-run` 预览模式，不会实际修改文件（`fix-exif` 使用 `--dry-run`）。所有写入 EXIF 元数据的命令均需安装 `exiftool`。
 
 ---
 
@@ -80,7 +81,9 @@ gtoh dedup        <input_dir>                # 检测并整理重复图片
 
 ### `gtoh migrate` — 迁移 Google Takeout 照片
 
-**用途**：扫描 Google Takeout 的年文件夹（`Photos from XXXX`），从 EXIF / 文件名 / JSON 元数据中提取时间戳和 GPS 坐标，将照片拷贝到输出目录，通过 `exiftool` 写入 EXIF 元数据，并生成 SHA-256 校验的元数据 JSON 文件。
+**用途**：扫描 Google Takeout 的年文件夹（`Photos from XXXX`），将照片拷贝到输出目录，通过 `exiftool` 从 **JSON 元数据文件**写入 `CreateDate` 和 `ModifyDate`，并在 EXIF 中缺少 GPS 时补充 JSON 中的 GPS 坐标。无 JSON 元数据的文件直接拷贝，不写 EXIF。生成 SHA-256 校验的元数据 JSON 文件，日志写入 `gtoh-log/migrate-{date}-{index}.log`（在 `--output-dir` 根目录下）。
+
+> **注意**：`migrate` 只写 `CreateDate` / `ModifyDate`，不写 `DateTimeOriginal`。如需同步 `DateTimeOriginal`，请在 `migrate` 后运行 `fix-exif` 或 `fix-name`。
 
 **典型 Google Takeout 目录结构**：
 
@@ -98,8 +101,8 @@ Takeout/
 **用法**：
 
 ```bash
-gtoh migrate "/path/to/Takeout/Google Photos" "/path/to/output"
-gtoh migrate "/path/to/Takeout/Google Photos" "/path/to/output" --dry-run
+gtoh migrate --input-dir "/path/to/Takeout/Google Photos" --output-dir "/path/to/output"
+gtoh migrate --input-dir "/path/to/Takeout/Google Photos" --output-dir "/path/to/output" --dry-run
 ```
 
 **预期输出**：
@@ -116,29 +119,25 @@ Found 200 files in 2 year folder(s)
 Processing complete!
   Scanned:            200 files
   Processed:          195 files
-  Skipped (no time):  3 files
   Skipped (exists):   1 files
   Failed (exiftool):  1 files
   Failed (other):     0 files
-  Log:                /path/to/output/gtoh.log
+  Manual review:      3 files
+  Log:                /path/to/output/gtoh-log/migrate-20240115-001.log
 ```
 
-**时间戳来源优先级**：
-
-1. EXIF `DateTimeOriginal`（通过 `exiftool` 提取）
-2. 文件名中的时间信息（如 `IMG_20230512_143022.jpg`）
-3. JSON 元数据文件中的时间
+**时间戳来源**：JSON 元数据文件（`photoTakenTime.timestamp`）
 
 **GPS 来源优先级**：
 
-1. EXIF GPS 坐标（通过 `exiftool` 提取）
-2. JSON 元数据文件中的 GPS 坐标
+1. EXIF GPS 坐标（保留已有的，不覆盖）
+2. JSON 元数据文件中的 GPS 坐标（仅在 EXIF 缺少时补充）
 
 ---
 
 ### `gtoh classify` — 按类型分类媒体文件
 
-**用途**：扫描 `input_dir` **根目录下的媒体文件**，根据文件名规则或 EXIF 设备信息，将文件移动到 `output_dir` 的对应子目录中。
+**用途**：扫描 `--input-dir` **根目录下的媒体文件**，根据文件名规则或 EXIF 设备信息，将文件移动到 `--output-dir` 的对应子目录中。
 
 | 目标目录 | 规则 |
 |----------|------|
@@ -149,13 +148,13 @@ Processing complete!
 
 不匹配任何规则的文件原地保留，计入 Skipped。
 
-> `classify` 只处理 `input_dir` 根目录中的常规文件；子目录及其内部文件会被忽略。
+> `classify` 只处理 `--input-dir` 根目录中的常规文件；子目录及其内部文件会被忽略。
 
 **用法**：
 
 ```bash
-gtoh classify "/path/to/input" "/path/to/output"
-gtoh classify "/path/to/input" "/path/to/output" --dry-run
+gtoh classify --input-dir "/path/to/input" --output-dir "/path/to/output"
+gtoh classify --input-dir "/path/to/input" --output-dir "/path/to/output" --dry-run
 ```
 
 **预期输出**：
@@ -174,20 +173,20 @@ Classification complete!
 
 ---
 
-### `gtoh to-heic` — 将根目录图片原地转换为 HEIC
+### `gtoh convert` — 将根目录图片原地转换为 HEIC
 
-**用途**：扫描 `input_dir` **根目录下的常规文件**，识别其中可解码的非 HEIC 图片，通过 **`ffmpeg`**（libx265，CRF 21，`medium` 预设，有损质量约 80）原地转换为 `.heic`。成功后迁移原图 EXIF 元数据（优先使用 FFmpeg 元数据映射）到新文件，再删除原文件；若目标 `.heic` 已存在则跳过；若扩展名与真实类型不符会先纠正，再转为 `.heic`；超过 **4000 万像素**的大图会串行处理，并强制 `-threads 1` 与 `-pix_fmt yuv420p` 以降低内存峰值。
+**用途**：扫描 `--input-dir` **根目录下的常规文件**，识别其中可解码的非 HEIC 图片，通过 **`heif-enc`**（quality 35，有损）原地转换为 `.heic`。成功后迁移原图 EXIF 元数据到新文件，再删除原文件；若目标 `.heic` 已存在则跳过；若扩展名与真实类型不符会先纠正，再转为 `.heic`；超过 **4000 万像素**的大图会串行处理以降低内存峰值。
 
-> `to-heic` 只处理 `input_dir` 根目录中的常规文件；子目录及其内部文件会被忽略。
+> `convert` 只处理 `--input-dir` 根目录中的常规文件；子目录及其内部文件会被忽略。
 >
-> 需要系统已安装 `ffmpeg`（含 libx265 与 HEIF/HEIC 封装支持）和 `exiftool`。
+> 需要系统已安装 `heif-enc`（`libheif-examples`）和 `exiftool`。
 
 **用法**：
 
 ```bash
-gtoh to-heic "/path/to/input"
-gtoh to-heic "/path/to/input" --dry-run
-gtoh to-heic "/path/to/input" --workers 1   # 降低并发以进一步节省内存
+gtoh convert --input-dir "/path/to/input"
+gtoh convert --input-dir "/path/to/input" --dry-run
+gtoh convert --input-dir "/path/to/input" --workers 1   # 降低并发以进一步节省内存
 ```
 
 **参数说明**：
@@ -206,48 +205,73 @@ Workers: 2
 🔄 [++++++++++++++++++++] 100% (12/12)
 
 HEIC conversion complete!
-  Root files scanned:   12
-  Converted:            9
-  Extension corrected:  2
-  Skipped (conflict):   1
-  Skipped (already HEIC): 1
-  Skipped (unsupported): 0
-  Failed:               1
+  Root files scanned:     12
+  Converted:               9
+  Extension corrected:     2
+  Skipped (conflict):      1
+  Skipped (already HEIC):  1
+  Skipped (unsupported):   0
+  Failed:                  1
 ```
 
 ---
 
-### `gtoh fix-exif-dates` — 同步 EXIF 日期字段
+### `gtoh fix-exif` — 同步 EXIF 日期字段
 
-**用途**：读取目录下媒体文件的 `DateTimeOriginal` 字段，将相同的值写入 `CreateDate` 和 `ModifyDate`（通过 `exiftool` 批量处理，非递归，仅处理第一级文件）。
+**用途**：读取目录下媒体文件的 `DateTimeOriginal` 字段，将相同的值写入 `CreateDate` 和 `ModifyDate`（通过 `exiftool` 并发处理，非递归，仅处理第一级文件）。无法解析 EXIF 时自动回落到文件名中的时间戳。处理失败时记录到 `gtoh-log/fix-exif-{date}-{index}.log`（在 `--input-dir` 根目录下）。
+
+支持格式：`jpg`、`jpeg`、`png`、`heic`、`heif`、`mp4`、`mov`、`avi`、`3gp`、`mkv`、`webp`。
 
 **用法**：
 
 ```bash
-gtoh fix-exif-dates --dir "/path/to/photos"
-gtoh fix-exif-dates --dir "/path/to/photos" --dry-run
+gtoh fix-exif --input-dir "/path/to/photos"
+gtoh fix-exif --input-dir "/path/to/photos" --dry-run
 ```
 
 **预期输出**：
 
 ```
-Done. Processed: 38, Skipped: 2
+Done. Processed: 38, Failed: 0, Skipped: 2
+```
+
+---
+
+### `gtoh fix-name` — 从文件名同步时间戳
+
+**用途**：解析媒体文件名中的日期时间，与 EXIF `DateTimeOriginal` 对比，仅当文件名时间早于 EXIF 时间（或 EXIF 中无时间戳）时写入 `DateTimeOriginal`、`CreateDate` 和 `ModifyDate`（通过 `exiftool` 并发处理，非递归，仅处理第一级文件）。文件名中没有可解析时间的文件自动跳过。处理失败时记录到 `gtoh-log/fix-name-{date}-{index}.log`（在 `--input-dir` 根目录下）。
+
+支持格式：`jpg`、`jpeg`、`png`、`heic`、`heif`、`mp4`、`mov`、`avi`、`3gp`、`mkv`、`webp`。
+
+**用法**：
+
+```bash
+gtoh fix-name --input-dir "/path/to/photos"
+gtoh fix-name --input-dir "/path/to/photos" --dry-run
+```
+
+**预期输出**：
+
+```
+Done. Processed: 24, Failed: 0, Skipped: 5
 ```
 
 ---
 
 ### `gtoh dedup` — 检测并整理重复图片
 
-**用途**：扫描 `<input_dir>` 下的**一级**图片文件（非递归），通过感知哈希（pHash + dHash 双重校验）检测重复，将每个重复批次移动到 `<input_dir>/dedup/group-001/`、`group-002/` … 等子目录，方便人工审查或删除。
+**用途**：扫描 `--input-dir` 指定目录下的**一级**图片文件（非递归），通过感知哈希（pHash + dHash 双重校验）检测重复，将每个重复批次移动到 `<input_dir>/dedup/group-001/`、`group-002/` … 等子目录，方便人工审查或删除。
 
 支持格式：`jpg`、`jpeg`、`png`、`gif`、`bmp`、`tiff`、`tif`、`webp`、`heic`、`heif`。
 
 **用法**：
 
 ```bash
-gtoh dedup "/path/to/photos"
-gtoh dedup "/path/to/photos" --dry-run
-gtoh dedup "/path/to/photos" --threshold 5   # 更严格的相似度（默认 10）
+gtoh dedup --input-dir "/path/to/photos"
+gtoh dedup --input-dir "/path/to/photos" --dry-run
+gtoh dedup --input-dir "/path/to/photos" --threshold 5          # 更严格的相似度（默认 10）
+gtoh dedup --input-dir "/path/to/photos" --decode-workers 2     # 限制并发解码数，降低内存峰值
+gtoh dedup --input-dir "/path/to/photos" --max-decode-mb 200    # 跳过超过 200 MB 的图片
 ```
 
 **预期输出**：
@@ -278,6 +302,80 @@ Dry-run complete! (no files were moved)
 |------|--------|------|
 | `--dry-run` | false | 仅预览，不移动文件 |
 | `--threshold` | 10 | 哈希距离阈值，越小越严格（pHash 和 dHash 均须 ≤ 阈值才判定为重复） |
+| `--no-cache` | false | 禁用哈希缓存，每次都从磁盘重新计算 |
+| `--cache-dir` | `<input_dir>/.gtoh_cache` | 哈希缓存 DB 目录 |
+| `--max-decode-mb` | 500 | 跳过文件体积超过此值（MB）的图片，防止 OOM |
+| `--decode-workers` | 0（不限制） | 同时解码图片的最大并发数；设为较小值（如 2）可降低内存峰值 |
+
+---
+
+### `gtoh rename` — 批量重命名照片文件
+
+**用途**：扫描 `--input-dir` 指定目录下的**一级**照片/视频文件（非递归），按文件修改时间自动生成标准化名称。
+
+支持格式：`jpg`、`jpeg`、`png`、`gif`、`bmp`、`tiff`、`tif`、`heic`、`heif`、`webp`、`avif`、`raw`、`cr2`、`nef`、`arw`、`dng`、`mp4`、`mov`、`avi`、`mkv`、`wmv`、`flv`、`3gp`、`m4v`、`webm` 等。
+
+**命名规则**：
+
+| 文件类型 | 目标格式 | 示例 |
+|---------|---------|------|
+| HEIC/HEIF 图片 | `IMG{YYYYMMDD}{HHMMSS}.{ext}` | `IMG20230123104707.heic` |
+| 其他图片 | `IMG_{YYYYMMDD}_{HHMMSS}.{ext}` | `IMG_20190403_165110.jpg` |
+| 独立视频 | `VID{YYYYMMDD}{HHMMSS}.{ext}` | `VID20190403165110.mp4` |
+| 连拍 HEIC | `IMG{YYYYMMDD}{HHMMSS}_BURST{NNN}.{ext}` | `IMG20190207184125_BURST000.heic` |
+| 连拍其他 | `IMG_{YYYYMMDD}_{HHMMSS}_BURST{NNN}.{ext}` | `IMG_20190207_184125_BURST000.jpg` |
+
+**连拍检测**：文件名匹配 `YYYYMMDD_HHMMSS_NNN.ext` 且同前缀存在 ≥2 个文件时触发，按原序号升序重编索引（从 `000` 起）。单独存在的同模式文件按普通规则处理。
+
+**MP4 伴侣**：与图片同名（仅扩展名不同）的 `.mp4` 文件，随主图一起重命名，格式与主图一致（扩展名替换为 `.mp4`）。
+
+**冲突处理**：目标文件名已存在时自动追加 `_001`、`_002` … 后缀。
+
+**用法**：
+
+```bash
+gtoh rename --input-dir ./Photos            # 重命名
+gtoh rename --input-dir ./Photos --dry-run  # 仅预览
+```
+
+**预期输出**：
+
+```
+  shot.heic -> IMG20230123104707.heic
+  photo.jpg -> IMG_20190403_165110.jpg
+Renamed: 42, Skipped: 3, Errors: 0
+```
+
+**参数说明**：
+
+| 标志 | 默认值 | 说明 |
+|------|--------|------|
+| `--input-dir` | （必填） | 目标目录 |
+| `--dry-run` | false | 仅预览，不实际修改 |
+
+---
+
+## 日志
+
+所有命令均将结构化日志写入 `gtoh-log/` 子目录，按日期和递增编号命名：
+
+```
+gtoh-log/{command}-{YYYYMMDD}-{NNN}.log
+```
+
+| 命令 | 日志目录 | 示例路径 |
+|------|---------|---------|
+| `migrate` | `--output-dir` 根目录 | `output/gtoh-log/migrate-20240115-001.log` |
+| `classify` | `--output-dir` 根目录 | `sorted/gtoh-log/classify-20240115-001.log` |
+| `fix-exif` | `--input-dir` 根目录 | `photos/gtoh-log/fix-exif-20240115-001.log` |
+| `fix-name` | `--input-dir` 根目录 | `photos/gtoh-log/fix-name-20240115-001.log` |
+| `convert` | `--input-dir` 根目录 | `photos/gtoh-log/convert-20240115-001.log` |
+| `dedup` | `--input-dir` 根目录 | `photos/gtoh-log/dedup-20240115-001.log` |
+| `rename` | `--input-dir` 根目录 | `photos/gtoh-log/rename-20240115-001.log` |
+
+- 同一天多次运行时，编号自动递增（`-001`、`-002`、…）
+- `--dry-run` 模式下不产生日志文件
+- 日志路径会在命令完成后的摘要中显示
 
 ---
 
@@ -286,22 +384,29 @@ Dry-run complete! (no files were moved)
 处理一份新的 Google Takeout 导出：
 
 ```bash
-# 1. 迁移照片（修复时间戳 + 拷贝到干净的输出目录）
-gtoh migrate "Takeout/Google Photos" "output"
+# 1. 迁移照片（从 JSON 写入 CreateDate / ModifyDate + 拷贝到干净的输出目录）
+gtoh migrate --input-dir "Takeout/Google Photos" --output-dir "output"
 
-# 2. （可选）补充同步 CreateDate / ModifyDate
-gtoh fix-exif-dates --dir "output"
+# 2. （可选）同步 DateTimeOriginal → CreateDate & ModifyDate
+gtoh fix-exif --input-dir "output"
 
-# 3. （可选）先将根目录图片原地转换为 HEIC
-gtoh to-heic "output" --dry-run   # 先预览
-gtoh to-heic "output"             # 需安装 ffmpeg（含 libx265 + HEIF 支持）
+# 3. （可选）对没有 DateTimeOriginal 的文件，从文件名补充时间戳
+gtoh fix-name --input-dir "output"
 
-# 4. （可选）按类型整理分类
-gtoh classify "output" "sorted"
+# 4. （可选）先将根目录图片原地转换为 HEIC
+gtoh convert --input-dir "output" --dry-run   # 先预览
+gtoh convert --input-dir "output"             # 需安装 heif-enc 与 exiftool
 
-# 5. （可选）检测并整理重复图片
-gtoh dedup "output" --dry-run   # 先预览
-gtoh dedup "output"             # 确认后执行
+# 5. （可选）按类型整理分类
+gtoh classify --input-dir "output" --output-dir "sorted"
+
+# 6. （可选）检测并整理重复图片
+gtoh dedup --input-dir "output" --dry-run   # 先预览
+gtoh dedup --input-dir "output"             # 确认后执行
+
+# 7. （可选）按时间批量重命名
+gtoh rename --input-dir "output" --dry-run   # 先预览
+gtoh rename --input-dir "output"
 ```
 
 ---
@@ -309,10 +414,12 @@ gtoh dedup "output"             # 确认后执行
 ## 注意事项
 
 - **备份优先**：建议在执行前对原始文件进行备份
-- **exiftool**：安装 `exiftool` 后可写入 EXIF 元数据（`DateTimeOriginal`）和 GPS 坐标；未安装时仅拷贝文件，不写入 EXIF
-- **ffmpeg（`to-heic` 必需）**：`to-heic` 依赖系统安装的 `ffmpeg`（需含 libx265 编码器与 HEIF/HEIC 封装支持）；缺少时命令会在启动时给出明确错误提示
-- **to-heic 行为**：仅处理输入目录第一级常规文件；遇到已存在的目标 `.heic` 会跳过，不会覆盖；超过 4000 万像素的大图会串行处理以降低内存峰值
-- **to-heic 内存调优**：默认使用 2 个并发 worker；若仍遇到内存压力，可通过 `--workers 1` 进一步降低并发
+- **exiftool**：安装 `exiftool` 后可写入 EXIF 元数据（`CreateDate`、`ModifyDate`、`DateTimeOriginal`）和 GPS 坐标；未安装时仅拷贝文件，不写入 EXIF
+- **heif-enc（`convert` 必需）**：`convert` 依赖系统安装的 `heif-enc`（`libheif-examples`）；缺少时命令会在启动时给出明确错误提示
+- **convert 行为**：仅处理输入目录第一级常规文件；遇到已存在的目标 `.heic` 会跳过，不会覆盖；超过 4000 万像素的大图会串行处理以降低内存峰值
+- **convert 内存调优**：默认使用 2 个并发 worker；若仍遇到内存压力，可通过 `--workers 1` 进一步降低并发
+- **dedup 内存调优**：默认跳过 >500 MB 的图片（`--max-decode-mb`）；大图库建议通过 `--decode-workers 2` 限制并发解码数，避免多个大图同时在内存中展开
+- **dedup 哈希缓存**：默认将 pHash/dHash 缓存于 `<input_dir>/.gtoh_cache/`，二次运行无需重新解码；使用 `--no-cache` 强制重算
 - **Windows**：直接运行 `.exe`，无需 WSL 或 Bash 环境
 
 ---

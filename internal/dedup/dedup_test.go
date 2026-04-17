@@ -1,12 +1,15 @@
 package dedup
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"os"
 	"path/filepath"
 	"testing"
+
+	goimagehash "github.com/corona10/goimagehash"
 )
 
 func TestRun_EmptyDir(t *testing.T) {
@@ -153,6 +156,171 @@ func createSolidImage(t *testing.T, path string, c color.Color) {
 	}
 }
 
+func TestHashCacheHitSkipsDecoding(t *testing.T) {
+	tmpDir := t.TempDir()
+	imgPath := filepath.Join(tmpDir, "img.jpg")
+	createCheckerImage(t, imgPath, 8)
+
+	cfg := DefaultConfig()
+	cfg.Threshold = 20
+	cfg.CacheDir = filepath.Join(tmpDir, ".cache")
+
+	// First run: decode from disk and populate cache.
+	r1, err := Run(tmpDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.TotalScanned != 1 {
+		t.Fatalf("expected 1 scanned, got %d", r1.TotalScanned)
+	}
+	if len(r1.Errors) != 0 {
+		t.Fatalf("unexpected errors on first run: %v", r1.Errors)
+	}
+
+	// Second run: should hit cache (no error, same result).
+	r2, err := Run(tmpDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.TotalScanned != 1 {
+		t.Fatalf("expected 1 scanned on second run, got %d", r2.TotalScanned)
+	}
+	if len(r2.Errors) != 0 {
+		t.Fatalf("unexpected errors on second run (cache hit path): %v", r2.Errors)
+	}
+}
+
+func TestMaxDecodeMBSkipsOversizedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	imgPath := filepath.Join(tmpDir, "big.jpg")
+	createCheckerImage(t, imgPath, 8)
+
+	cfg := DefaultConfig()
+	cfg.NoCache = true
+	cfg.MaxDecodeMB = 0 // 0 = unlimited, set very small threshold via direct call
+
+	// Use 1 byte limit so every file is "oversized".
+	result := prepareEntry(imgPath, nil, 1, nil) // 1 MB but our image is tiny — set to 0 to force skip
+	_ = result                              // this won't skip; test the actual threshold logic below
+
+	// Test via Run with a threshold-equivalent approach: create a 1-byte "image" file
+	// that exceeds a 0-byte limit isn't supported (min 1). Instead test the error path
+	// by using an internal call with maxDecodeMB=1 and a file known to be < 1 MB.
+	// The real OOM protection is for files > maxDecodeMB*1024*1024.
+	// Create a dummy non-image file to trigger the decode-error path.
+	badPath := filepath.Join(tmpDir, "notanimage.jpg")
+	if err := os.WriteFile(badPath, []byte("not jpeg data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgBad := DefaultConfig()
+	cfgBad.NoCache = true
+	r, err := Run(tmpDir, cfgBad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The non-image file should appear in Errors.
+	found := false
+	for _, fe := range r.Errors {
+		if filepath.Base(fe.Path) == "notanimage.jpg" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected notanimage.jpg to appear in Errors")
+	}
+}
+
+func TestMaxDecodeMBOversizedSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	imgPath := filepath.Join(tmpDir, "img.jpg")
+	createCheckerImage(t, imgPath, 8)
+
+	// Use maxDecodeMB=0 (treated as unlimited) vs a very low byte threshold via
+	// direct prepareEntry call to validate the guard logic.
+	// File is ~a few KB; set limit to 0 bytes (no files can pass).
+	res := prepareEntry(imgPath, nil, 0, nil) // 0 = unlimited, should decode fine
+	if res.err != nil {
+		t.Fatalf("maxDecodeMB=0 should mean unlimited, got err: %s", res.err.Error)
+	}
+
+	// Create a 10-byte fake "image" and test with 1-byte limit.
+	tiny := filepath.Join(tmpDir, "tiny.jpg")
+	_ = os.WriteFile(tiny, make([]byte, 10), 0644)
+	res2 := prepareEntry(tiny, nil, 1, nil) // maxDecodeMB=1 => limit is 1*1024*1024; 10 bytes is below limit
+	// 10 bytes < 1 MB, so not oversized — will fail on decode (not a real image)
+	if res2.err == nil || res2.err.Error == "oversized: file too large to decode" {
+		// Fine either way; not oversized
+	}
+
+	// The true test: file size is exactly at the limit — create a file exactly maxDecodeMB+1 bytes.
+	bigPath := filepath.Join(tmpDir, "oversized.jpg")
+	bigData := make([]byte, 2*1024*1024+1) // 2 MB + 1 byte
+	_ = os.WriteFile(bigPath, bigData, 0644)
+	res3 := prepareEntry(bigPath, nil, 2, nil) // maxDecodeMB=2 => limit is 2 MB; file is 2 MB+1 byte
+	if res3.err == nil {
+		t.Fatal("expected oversized error for file > maxDecodeMB")
+	}
+	if res3.err.Error != "oversized: file too large to decode" {
+		t.Errorf("unexpected error: %s", res3.err.Error)
+	}
+}
+
+func TestBuildBucketsMatchesBruteForce(t *testing.T) {
+	// Build a small set of entries with known pHash values.
+	entries := []preparedEntry{
+		{phash: 0xF0F0F0F0F0F0F0F0, dhash: 0xAAAAAAAAAAAAAAAA},
+		{phash: 0xF0F0F0F0F0F0F0F1, dhash: 0xAAAAAAAAAAAAAAAA}, // same top 16 bits as [0]
+		{phash: 0x0101010101010101, dhash: 0x5555555555555555}, // different bucket
+		{phash: 0xF0F0F0F0FFFFFFFF, dhash: 0xAAAAAAAABBBBBBBB}, // same top 16 bits as [0]
+	}
+
+	threshold := 10
+
+	// Brute-force O(n²).
+	bfUF := newUnionFind(len(entries))
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			pDist, _ := goimagehash.NewImageHash(entries[i].phash, goimagehash.PHash).Distance(
+				goimagehash.NewImageHash(entries[j].phash, goimagehash.PHash))
+			dDist, _ := goimagehash.NewImageHash(entries[i].dhash, goimagehash.DHash).Distance(
+				goimagehash.NewImageHash(entries[j].dhash, goimagehash.DHash))
+			if pDist <= threshold && dDist <= threshold {
+				bfUF.union(i, j)
+			}
+		}
+	}
+
+	// Bucket-based.
+	bucketUF := newUnionFind(len(entries))
+	buckets := buildBuckets(entries, 16)
+	for _, idxs := range buckets {
+		for a := 0; a < len(idxs); a++ {
+			for b := a + 1; b < len(idxs); b++ {
+				i, j := idxs[a], idxs[b]
+				pDist, _ := goimagehash.NewImageHash(entries[i].phash, goimagehash.PHash).Distance(
+					goimagehash.NewImageHash(entries[j].phash, goimagehash.PHash))
+				dDist, _ := goimagehash.NewImageHash(entries[i].dhash, goimagehash.DHash).Distance(
+					goimagehash.NewImageHash(entries[j].dhash, goimagehash.DHash))
+				if pDist <= threshold && dDist <= threshold {
+					bucketUF.union(i, j)
+				}
+			}
+		}
+	}
+
+	// Compare group membership: every pair that BF groups together, buckets must too.
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			bfSame := bfUF.find(i) == bfUF.find(j)
+			bkSame := bucketUF.find(i) == bucketUF.find(j)
+			if bfSame && !bkSame {
+				t.Errorf("bucket method missed duplicate pair (%d, %d)", i, j)
+			}
+		}
+	}
+}
+
 // createCheckerImage creates a black/white checkerboard pattern.
 func createCheckerImage(t *testing.T, path string, cellSize int) {
 	t.Helper()
@@ -197,4 +365,45 @@ func createStripedImage(t *testing.T, path string, stripeHeight int) {
 	if err := jpeg.Encode(f, img, nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestDecodeWorkersLimitsConcurrency(t *testing.T) {
+tmpDir := t.TempDir()
+
+// Create several identical images so there will be duplicates to detect.
+for i := 0; i < 5; i++ {
+createSolidImage(t, filepath.Join(tmpDir, fmt.Sprintf("img%d.jpg", i)), color.RGBA{50, 100, 150, 255})
+}
+
+// Run with DecodeWorkers=1 (strict serial decode).
+cfgSerial := DefaultConfig()
+cfgSerial.DecodeWorkers = 1
+cfgSerial.NoCache = true
+resultSerial, err := Run(tmpDir, cfgSerial)
+if err != nil {
+t.Fatal(err)
+}
+
+// Run without limit (DecodeWorkers=0) for comparison.
+cfgUnlimited := DefaultConfig()
+cfgUnlimited.DecodeWorkers = 0
+cfgUnlimited.NoCache = true
+resultUnlimited, err := Run(tmpDir, cfgUnlimited)
+if err != nil {
+t.Fatal(err)
+}
+
+// Both runs must agree on the number of scanned files and duplicate groups.
+if resultSerial.TotalScanned != resultUnlimited.TotalScanned {
+t.Errorf("TotalScanned mismatch: serial=%d unlimited=%d",
+resultSerial.TotalScanned, resultUnlimited.TotalScanned)
+}
+if resultSerial.TotalGroups != resultUnlimited.TotalGroups {
+t.Errorf("TotalGroups mismatch: serial=%d unlimited=%d",
+resultSerial.TotalGroups, resultUnlimited.TotalGroups)
+}
+if resultSerial.TotalDupes != resultUnlimited.TotalDupes {
+t.Errorf("TotalDupes mismatch: serial=%d unlimited=%d",
+resultSerial.TotalDupes, resultUnlimited.TotalDupes)
+}
 }

@@ -178,7 +178,7 @@ func TestDecodeSourceImageUsesActualContentForCanonicalExtension(t *testing.T) {
 		t.Fatalf("EncodeJPEG: %v", err)
 	}
 
-	decoded, err := decodeSourceImage(srcPath)
+	decoded, err := decodeSourceImage(srcPath, nil)
 	if err != nil {
 		t.Fatalf("decodeSourceImage returned error: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestDecodeSourceImageRecordsPixelCount(t *testing.T) {
 		t.Fatalf("EncodePNG: %v", err)
 	}
 
-	decoded, err := decodeSourceImage(srcPath)
+	decoded, err := decodeSourceImage(srcPath, nil)
 	if err != nil {
 		t.Fatalf("decodeSourceImage: %v", err)
 	}

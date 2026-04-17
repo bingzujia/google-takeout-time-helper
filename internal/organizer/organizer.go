@@ -2,12 +2,13 @@ package organizer
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
+
+	"github.com/bingzujia/g_photo_take_out_helper/internal/fileutil"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/mediatype"
 )
 
 // Mode determines which files to organize.
@@ -33,9 +34,6 @@ type Result struct {
 	Moved   int
 	Skipped int
 }
-
-var imageExts = setOf("jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "heic", "heif", "webp", "avif", "raw", "cr2", "nef", "arw", "dng")
-var videoExts = setOf("mp4", "mov", "avi", "mkv", "wmv", "flv", "3gp", "m4v", "webm", "mpg", "mpeg", "asf", "rm", "rmvb", "vob", "ts", "mts", "m2ts")
 
 var cameraPrefixes = []string{"WP_", "IMG_", "IMG", "VID_", "VID", "P_", "PXL_", "DSC_"}
 var cameraDatePattern = regexp.MustCompile(`^\d{8}_\d{6}`)
@@ -97,7 +95,7 @@ func matches(name string, mode Mode) bool {
 
 	switch mode {
 	case ModeCamera:
-		if !imageExts[ext] && !videoExts[ext] {
+		if !mediatype.IsImage(ext) && !mediatype.IsVideo(ext) {
 			return false
 		}
 		for _, prefix := range cameraPrefixes {
@@ -107,12 +105,12 @@ func matches(name string, mode Mode) bool {
 		}
 		return cameraDatePattern.MatchString(base)
 	case ModeScreenshot:
-		if !imageExts[ext] {
+		if !mediatype.IsImage(ext) {
 			return false
 		}
 		return strings.Contains(lower, "screenshot")
 	case ModeWechat:
-		if !imageExts[ext] && !videoExts[ext] {
+		if !mediatype.IsImage(ext) && !mediatype.IsVideo(ext) {
 			return false
 		}
 		return strings.HasPrefix(lower, "mmexport")
@@ -121,7 +119,7 @@ func matches(name string, mode Mode) bool {
 }
 
 func moveFile(src, name string, cfg Config, result *Result) error {
-	destPath := resolveDestPath(cfg.DestDir, name)
+	destPath := fileutil.ResolveDestPath(cfg.DestDir, name)
 
 	if cfg.DryRun {
 		result.Moved++
@@ -130,7 +128,7 @@ func moveFile(src, name string, cfg Config, result *Result) error {
 
 	if err := os.Rename(src, destPath); err != nil {
 		// Try copy+delete for cross-device moves
-		if err2 := copyFile(src, destPath); err2 != nil {
+		if err2 := fileutil.CopyFile(src, destPath); err2 != nil {
 			result.Skipped++
 			return nil
 		}
@@ -140,50 +138,3 @@ func moveFile(src, name string, cfg Config, result *Result) error {
 	return nil
 }
 
-func resolveDestPath(destDir, name string) string {
-	target := filepath.Join(destDir, name)
-	if _, err := os.Stat(target); os.IsNotExist(err) {
-		return target
-	}
-	ext := filepath.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
-	suffix := time.Now().Format("20060102150405")
-	return filepath.Join(destDir, fmt.Sprintf("%s_%s%s", stem, suffix, ext))
-}
-
-func copyFile(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err = io.Copy(out, in); err != nil {
-		return err
-	}
-	if err = out.Close(); err != nil {
-		return err
-	}
-
-	// Preserve mtime from source.
-	return os.Chtimes(dst, info.ModTime(), info.ModTime())
-}
-
-func setOf(vals ...string) map[string]bool {
-	m := make(map[string]bool, len(vals))
-	for _, v := range vals {
-		m[v] = true
-	}
-	return m
-}

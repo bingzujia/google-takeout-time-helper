@@ -84,33 +84,30 @@ func TestClassifyFile_NoMatch(t *testing.T) {
 	}
 }
 
-// --- exiftoolFallback tests (task 6.2) ---
+// --- exifMapFallback tests (task 6.2) ---
 
-func TestExiftoolFallback_NonImageFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	txtFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(txtFile, []byte("not an image"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// A plain text file should have no Make/Model → false.
-	// If exiftool is not installed this also returns false gracefully.
-	got, err := exiftoolFallback(txtFile)
-	if err != nil {
-		t.Fatalf("exiftoolFallback returned unexpected error: %v", err)
-	}
-	if got {
-		t.Error("exiftoolFallback returned true for a plain text file, want false")
+func TestExifMapFallback_Missing(t *testing.T) {
+	exifMap := map[string]exifDeviceOutput{}
+	if got := exifMapFallback("/some/file.jpg", exifMap); got {
+		t.Error("expected false for missing key")
 	}
 }
 
-func TestExiftoolFallback_NonExistentFile(t *testing.T) {
-	got, err := exiftoolFallback("/nonexistent/file.jpg")
-	if err != nil {
-		t.Fatalf("exiftoolFallback returned unexpected error: %v", err)
+func TestExifMapFallback_EmptyFields(t *testing.T) {
+	exifMap := map[string]exifDeviceOutput{
+		"/some/file.jpg": {Make: "", Model: ""},
 	}
-	if got {
-		t.Error("exiftoolFallback returned true for a non-existent file, want false")
+	if got := exifMapFallback("/some/file.jpg", exifMap); got {
+		t.Error("expected false when Make and Model are empty")
+	}
+}
+
+func TestExifMapFallback_HasMake(t *testing.T) {
+	exifMap := map[string]exifDeviceOutput{
+		"/some/file.jpg": {Make: "Apple", Model: ""},
+	}
+	if got := exifMapFallback("/some/file.jpg", exifMap); !got {
+		t.Error("expected true when Make is non-empty")
 	}
 }
 

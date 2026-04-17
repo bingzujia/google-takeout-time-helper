@@ -116,7 +116,7 @@ var supplementalRegex = regexp.MustCompile(`^(.+)\.supp[a-z]*\.json$`)
 //	6. NoExtension — strip the file extension entirely
 //
 // Returns nil if no JSON sidecar is found after all 6 strategies.
-func JSONForFile(photoPath string) *JSONLookupResult {
+func JSONForFile(photoPath string, cache *DirCache) *JSONLookupResult {
 	dir := filepath.Dir(photoPath)
 	name := filepath.Base(photoPath)
 
@@ -177,7 +177,7 @@ func JSONForFile(photoPath string) *JSONLookupResult {
 	//   b) photo(N).ext → photo.ext.supp*(N).json
 	escapedName := regexp.QuoteMeta(name)
 	pattern := regexp.MustCompile(`^` + escapedName + `\.su[a-z-]*(\(\d+\))?\.json$`)
-	entries, err := os.ReadDir(dir)
+	entries, err := cache.ReadDir(dir)
 	if err == nil {
 		for _, e := range entries {
 			if e.IsDir() {

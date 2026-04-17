@@ -10,7 +10,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/bingzujia/g_photo_take_out_helper/internal/destlocker"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/exifrunner"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/logutil"
 	"github.com/bingzujia/g_photo_take_out_helper/internal/progress"
+	"github.com/bingzujia/g_photo_take_out_helper/internal/workerpool"
 )
 
 // Config controls a root-level directory HEIC conversion run.
@@ -20,6 +24,7 @@ type Config struct {
 	ShowProgress bool
 	Workers      int
 	Converter    *Converter
+	Logger       *logutil.Logger // structured log; if nil a Nop logger is used
 	Infof        func(format string, args ...any)
 	Warnf        func(format string, args ...any)
 	Errorf       func(format string, args ...any)
@@ -57,30 +62,12 @@ type fileJob struct {
 	Path string
 }
 
-type destinationLocker struct {
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
-}
-
-func newDestinationLocker() *destinationLocker {
-	return &destinationLocker{locks: make(map[string]*sync.Mutex)}
-}
-
-func (d *destinationLocker) Lock(path string) func() {
-	d.mu.Lock()
-	lock, ok := d.locks[path]
-	if !ok {
-		lock = &sync.Mutex{}
-		d.locks[path] = lock
-	}
-	d.mu.Unlock()
-
-	lock.Lock()
-	return lock.Unlock
-}
-
 // Run converts eligible root-level files under cfg.InputDir to HEIC in place.
 func Run(cfg Config) (*Stats, error) {
+	if cfg.Logger == nil {
+		cfg.Logger = logutil.Nop()
+	}
+
 	files, err := scanRootFiles(cfg.InputDir)
 	if err != nil {
 		return nil, fmt.Errorf("scan input dir: %w", err)
@@ -89,6 +76,22 @@ func Run(cfg Config) (*Stats, error) {
 	stats := &Stats{Scanned: len(files)}
 	if len(files) == 0 {
 		return stats, nil
+	}
+
+	// Pre-query YCbCrSubSampling for all files in one batched exiftool call so
+	// each worker can do a fast map lookup instead of spawning a new subprocess.
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = f.Path
+	}
+	chromaResults, _ := exifrunner.BatchQuery(paths, []string{"YCbCrSubSampling"})
+	chromaMap := make(map[string]string, len(files))
+	for i, path := range paths {
+		if chromaResults != nil && i < len(chromaResults) && chromaResults[i] != nil {
+			if v, ok := chromaResults[i]["YCbCrSubSampling"]; ok {
+				chromaMap[path] = v
+			}
+		}
 	}
 
 	converter := cfg.Converter
@@ -116,7 +119,6 @@ func Run(cfg Config) (*Stats, error) {
 		errorf = progress.Error
 	}
 
-	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var completed atomic.Int64
 	reporter := progress.NewReporter(len(files), cfg.ShowProgress)
@@ -126,25 +128,13 @@ func Run(cfg Config) (*Stats, error) {
 	// across all workers, preventing simultaneous multi-GB encoder processes.
 	oversizedSem := make(chan struct{}, 1)
 
-	locker := newDestinationLocker()
-	jobCh := make(chan fileJob, workers)
+	locker := destlocker.New()
 
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobCh {
-				processFile(job, cfg, converter, stats, &mu, locker, oversizedSem, infof, warnf, errorf)
-				reporter.Update(int(completed.Add(1)))
-			}
-		}()
-	}
-
-	for _, job := range files {
-		jobCh <- job
-	}
-	close(jobCh)
-	wg.Wait()
+	_ = workerpool.Run(files, workers, func(job fileJob) error {
+		processFile(job, cfg, converter, stats, &mu, locker, oversizedSem, chromaMap, infof, warnf, errorf, cfg.Logger)
+		reporter.Update(int(completed.Add(1)))
+		return nil
+	})
 
 	return stats, nil
 }
@@ -186,15 +176,17 @@ func processFile(
 	converter *Converter,
 	stats *Stats,
 	mu *sync.Mutex,
-	locker *destinationLocker,
+	locker *destlocker.Locker,
 	oversizedSem chan struct{},
+	chromaMap map[string]string,
 	infof func(string, ...any),
 	warnf func(string, ...any),
 	errorf func(string, ...any),
+	logger *logutil.Logger,
 ) {
-	decoded, err := decodeSourceImage(job.Path)
+	decoded, err := decodeSourceImage(job.Path, chromaMap)
 	if err != nil {
-		handleDecodeOutcome(job, err, stats, mu, warnf, errorf)
+		handleDecodeOutcome(job, err, stats, mu, warnf, errorf, logger)
 		return
 	}
 
@@ -209,12 +201,14 @@ func processFile(
 	if targetExists(targetPath, originalPath, renamed) {
 		recordConflict(stats, mu, originalPath, targetPath, "target .heic already exists")
 		warnf("skip %s: target already exists at %s", originalPath, targetPath)
+		logger.Skip("target-exists", originalPath)
 		return
 	}
 
 	if renamed && pathExists(correctedPath) {
 		recordConflict(stats, mu, originalPath, correctedPath, "corrected source path already exists")
 		warnf("skip %s: corrected source path already exists at %s", originalPath, correctedPath)
+		logger.Skip("source-conflict", originalPath)
 		return
 	}
 
@@ -241,6 +235,7 @@ func processFile(
 		if err := os.Rename(originalPath, correctedPath); err != nil {
 			recordFailure(stats, mu, originalPath, fmt.Errorf("rename source to %s: %w", correctedPath, err))
 			errorf("failed %s: rename source to %s: %v", originalPath, correctedPath, err)
+			logger.Fail("rename-source", originalPath, err.Error())
 			return
 		}
 		sourcePath = correctedPath
@@ -261,6 +256,7 @@ func processFile(
 		revertErr := revertSource()
 		recordFailure(stats, mu, originalPath, joinErrors(fmt.Errorf("create temp file: %w", err), revertErr))
 		errorf("failed %s: create temp file: %v", originalPath, err)
+		logger.Fail("create-temp", originalPath, err.Error())
 		return
 	}
 	tmpPath := tmpFile.Name()
@@ -269,6 +265,7 @@ func processFile(
 		revertErr := revertSource()
 		recordFailure(stats, mu, originalPath, joinErrors(fmt.Errorf("close temp file: %w", closeErr), revertErr))
 		errorf("failed %s: close temp file: %v", originalPath, closeErr)
+		logger.Fail("close-temp", originalPath, closeErr.Error())
 		return
 	}
 	defer os.Remove(tmpPath)
@@ -278,6 +275,7 @@ func processFile(
 		revertErr := revertSource()
 		recordFailure(stats, mu, originalPath, joinErrors(fmt.Errorf("stat source: %w", err), revertErr))
 		errorf("failed %s: stat source: %v", originalPath, err)
+		logger.Fail("stat-source", originalPath, err.Error())
 		return
 	}
 
@@ -285,6 +283,7 @@ func processFile(
 		revertErr := revertSource()
 		recordFailure(stats, mu, originalPath, joinErrors(err, revertErr))
 		errorf("failed %s: %v", originalPath, err)
+		logger.Fail("convert", originalPath, err.Error())
 		return
 	}
 
@@ -292,6 +291,7 @@ func processFile(
 		revertErr := revertSource()
 		recordFailure(stats, mu, originalPath, joinErrors(fmt.Errorf("finalize target: %w", err), revertErr))
 		errorf("failed %s: finalize target %s: %v", originalPath, targetPath, err)
+		logger.Fail("finalize", originalPath, err.Error())
 		return
 	}
 
@@ -300,6 +300,7 @@ func processFile(
 		revertErr := revertSource()
 		recordFailure(stats, mu, originalPath, joinErrors(fmt.Errorf("delete source: %w", err), removeTargetErr, revertErr))
 		errorf("failed %s: delete source: %v", originalPath, err)
+		logger.Fail("delete-source", originalPath, err.Error())
 		return
 	}
 
@@ -310,19 +311,22 @@ func processFile(
 		infof("converted %s via corrected source extension -> %s", originalPath, targetPath)
 	}
 	mu.Unlock()
+	logger.Info("converted", originalPath)
 }
 
-func handleDecodeOutcome(job fileJob, err error, stats *Stats, mu *sync.Mutex, warnf, errorf func(string, ...any)) {
+func handleDecodeOutcome(job fileJob, err error, stats *Stats, mu *sync.Mutex, warnf, errorf func(string, ...any), logger *logutil.Logger) {
 	switch {
 	case errors.Is(err, ErrAlreadyHEIC):
 		mu.Lock()
 		stats.SkippedAlreadyHEIC++
 		mu.Unlock()
 		warnf("skip %s: already HEIC/HEIF content", job.Path)
+		logger.Skip("already-heic", job.Path)
 	case errors.Is(err, image.ErrFormat):
 		if hasKnownImageExtension(job.Path) {
 			recordFailure(stats, mu, job.Path, err)
 			errorf("failed %s: %v", job.Path, err)
+			logger.Fail("decode", job.Path, err.Error())
 			return
 		}
 		mu.Lock()
@@ -331,6 +335,7 @@ func handleDecodeOutcome(job fileJob, err error, stats *Stats, mu *sync.Mutex, w
 	default:
 		recordFailure(stats, mu, job.Path, err)
 		errorf("failed %s: %v", job.Path, err)
+		logger.Fail("decode", job.Path, err.Error())
 	}
 }
 

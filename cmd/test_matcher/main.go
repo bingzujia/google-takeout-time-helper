@@ -79,7 +79,7 @@ func main() {
 
 	for _, name := range photos {
 		photoPath := filepath.Join(dir, name)
-		jsonResult := matcher.JSONForFile(photoPath)
+		jsonResult := matcher.JSONForFile(photoPath, nil)
 
 		// --- Timestamp resolution ---
 		exifTime, exifTimeOk := parser.ParseEXIFTimestamp(photoPath)
