@@ -1,7 +1,7 @@
 # g_photo_take_out_helper
 
 > **现已提供跨平台 Go 二进制 `gtoh`**，无需 WSL、无需 Bash，Windows / macOS / Linux 均可直接运行。
-> 原 Shell 脚本保留于仓库根目录，供历史参考。
+> 原 Shell 脚本已归档至 `legacy/` 目录，供历史参考。
 
 ---
 
@@ -428,10 +428,10 @@ gtoh rename --input-dir "output"
 
 | Shell 脚本 | 功能 |
 |------------|------|
-| `fix_takeout_photo_time_wsl.sh` | 修复 Google Takeout 时间戳 |
-| `fix_img_timestamps.sh` | 修复 IMG/VID 文件名时间戳 |
-| `organize_photos.sh` / `organize_screenshots.sh` / `organize_wechat.sh` | 按类型整理照片 |
-| `rename_photos.sh` | 按时间戳重命名 |
-| `delete_json_files.sh` | 删除 JSON 附属文件 |
+| `legacy/fix_takeout_photo_time_wsl.sh` | 修复 Google Takeout 时间戳 |
+| `legacy/fix_img_timestamps.sh` | 修复 IMG/VID 文件名时间戳 |
+| `legacy/organize_photos.sh` / `legacy/organize_screenshots.sh` / `legacy/organize_wechat.sh` | 按类型整理照片 |
+| `legacy/rename_photos.sh` | 按时间戳重命名 |
+| `legacy/delete_json_files.sh` | 删除 JSON 附属文件 |
 
 原脚本仅支持 WSL / Linux，新 `gtoh` 二进制全平台可用。
