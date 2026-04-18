@@ -407,3 +407,333 @@ t.Errorf("TotalDupes mismatch: serial=%d unlimited=%d",
 resultSerial.TotalDupes, resultUnlimited.TotalDupes)
 }
 }
+
+// TestAutoMode_SelectBestFile tests the selectBestFile priority algorithm
+func TestAutoMode_SelectBestFile(t *testing.T) {
+// Test 1: By size (largest first)
+files := []ImageInfo{
+{Path: "small.jpg", Size: 1000},
+{Path: "large.jpg", Size: 5000},
+{Path: "medium.jpg", Size: 3000},
+}
+bestIdx := selectBestFile(files)
+if bestIdx != 1 || files[bestIdx].Path != "large.jpg" {
+t.Errorf("expected index 1 (large.jpg), got index %d (%s)", bestIdx, files[bestIdx].Path)
+}
+
+// Test 2: Empty list
+emptyFiles := []ImageInfo{}
+bestIdx = selectBestFile(emptyFiles)
+if bestIdx != -1 {
+t.Errorf("expected -1 for empty list, got %d", bestIdx)
+}
+
+// Test 3: Single file
+singleFile := []ImageInfo{{Path: "only.jpg", Size: 1000}}
+bestIdx = selectBestFile(singleFile)
+if bestIdx != 0 {
+t.Errorf("expected 0 for single file, got %d", bestIdx)
+}
+}
+
+// TestAutoMode_CopyFile tests file copying with 32KB buffer
+func TestAutoMode_CopyFile(t *testing.T) {
+tmpDir := t.TempDir()
+srcFile := filepath.Join(tmpDir, "source.jpg")
+dstFile := filepath.Join(tmpDir, "destination.jpg")
+
+// Create a test file
+content := []byte("test content for copy")
+if err := os.WriteFile(srcFile, content, 0644); err != nil {
+t.Fatal(err)
+}
+
+// Copy the file
+if err := copyFile(srcFile, dstFile); err != nil {
+t.Fatal(err)
+}
+
+// Verify destination exists and has same content
+dstContent, err := os.ReadFile(dstFile)
+if err != nil {
+t.Fatal(err)
+}
+if string(dstContent) != string(content) {
+t.Errorf("copied content mismatch: expected %q, got %q", string(content), string(dstContent))
+}
+}
+
+// TestAutoMode_HandleAutoMode tests auto mode with --auto flag
+func TestAutoMode_HandleAutoMode(t *testing.T) {
+tmpDir := t.TempDir()
+
+// Create three identical images
+color1 := color.RGBA{100, 100, 100, 255}
+createSolidImage(t, filepath.Join(tmpDir, "a.jpg"), color1)
+createSolidImage(t, filepath.Join(tmpDir, "b.jpg"), color1)
+createSolidImage(t, filepath.Join(tmpDir, "c.jpg"), color1)
+
+cfg := DefaultConfig()
+cfg.Auto = true // Enable auto mode
+cfg.DryRun = false // Must enable actual file operations for this test
+result, err := Run(tmpDir, cfg)
+if err != nil {
+t.Fatal(err)
+}
+
+// Verify dedup was detected
+if result.TotalScanned != 3 {
+t.Errorf("expected 3 scanned, got %d", result.TotalScanned)
+}
+if result.TotalGroups != 1 {
+t.Errorf("expected 1 duplicate group, got %d", result.TotalGroups)
+}
+if result.TotalDupes != 2 {
+t.Errorf("expected 2 duplicates, got %d", result.TotalDupes)
+}
+
+// Verify dedup-auto directory exists
+dedupAutoDir := filepath.Join(tmpDir, "dedup-auto")
+if _, err := os.Stat(dedupAutoDir); os.IsNotExist(err) {
+t.Errorf("dedup-auto directory not created")
+}
+
+// Verify group subdirectory exists
+groupDir := filepath.Join(dedupAutoDir, "group-1")
+if _, err := os.Stat(groupDir); os.IsNotExist(err) {
+t.Errorf("group-1 directory not created")
+}
+}
+
+
+// BenchmarkSelectBestFile benchmarks the selectBestFile function
+func BenchmarkSelectBestFile(b *testing.B) {
+files := []ImageInfo{
+{Path: "file1.jpg", Size: 1000},
+{Path: "file2.jpg", Size: 5000},
+{Path: "file3.jpg", Size: 3000},
+{Path: "file4.jpg", Size: 2000},
+{Path: "file5.jpg", Size: 4500},
+}
+
+b.ResetTimer()
+for i := 0; i < b.N; i++ {
+selectBestFile(files)
+}
+}
+
+// BenchmarkCopyFile benchmarks the copyFile function
+func BenchmarkCopyFile(b *testing.B) {
+tmpDir := b.TempDir()
+
+// Create a 1MB test file
+srcFile := filepath.Join(tmpDir, "source.bin")
+f, _ := os.Create(srcFile)
+f.Write(make([]byte, 1*1024*1024))
+f.Close()
+
+b.ResetTimer()
+for i := 0; i < b.N; i++ {
+dstFile := filepath.Join(tmpDir, fmt.Sprintf("dest_%d.bin", i))
+copyFile(srcFile, dstFile)
+}
+}
+
+// TestAutoMode_LargeGroup tests auto mode with many duplicates in one group
+func TestAutoMode_LargeGroup(t *testing.T) {
+tmpDir := t.TempDir()
+
+// Create 10 identical images
+color1 := color.RGBA{50, 100, 150, 255}
+for i := 0; i < 10; i++ {
+createSolidImage(t, filepath.Join(tmpDir, fmt.Sprintf("img_%d.jpg", i)), color1)
+}
+
+cfg := DefaultConfig()
+cfg.Auto = true
+cfg.DryRun = false
+result, err := Run(tmpDir, cfg)
+if err != nil {
+t.Fatal(err)
+}
+
+if result.TotalGroups != 1 {
+t.Errorf("expected 1 group, got %d", result.TotalGroups)
+}
+if result.TotalDupes != 9 {
+t.Errorf("expected 9 duplicates, got %d", result.TotalDupes)
+}
+
+// All 10 files should be in dedup-auto
+groupDir := filepath.Join(tmpDir, "dedup-auto", "group-1")
+files, err := os.ReadDir(groupDir)
+if err != nil {
+t.Fatal(err)
+}
+if len(files) != 10 {
+t.Errorf("expected 10 files in group-1, got %d", len(files))
+}
+}
+
+// TestAutoMode_DryRun tests that --dry-run doesn't create files
+func TestAutoMode_DryRun(t *testing.T) {
+tmpDir := t.TempDir()
+
+// Create 3 identical images
+color1 := color.RGBA{100, 100, 100, 255}
+createSolidImage(t, filepath.Join(tmpDir, "a.jpg"), color1)
+createSolidImage(t, filepath.Join(tmpDir, "b.jpg"), color1)
+createSolidImage(t, filepath.Join(tmpDir, "c.jpg"), color1)
+
+cfg := DefaultConfig()
+cfg.Auto = true
+cfg.DryRun = true // Enable dry-run
+result, err := Run(tmpDir, cfg)
+if err != nil {
+t.Fatal(err)
+}
+
+// Should detect duplicates
+if result.TotalGroups != 1 {
+t.Errorf("expected 1 group detected in dry-run, got %d", result.TotalGroups)
+}
+
+// But dedup-auto directory should NOT be created
+dedupAutoDir := filepath.Join(tmpDir, "dedup-auto")
+if _, err := os.Stat(dedupAutoDir); !os.IsNotExist(err) {
+t.Errorf("dedup-auto directory should not be created in dry-run mode")
+}
+}
+
+// 【工具函数 1】assertFilesInGroup - 验证 group 目录中的文件计数
+func assertFilesInGroup(t *testing.T, groupDir string, expectedCount int, expectedNames []string) error {
+// 检查目录是否存在
+stat, err := os.Stat(groupDir)
+if err != nil {
+t.Errorf("group directory does not exist: %v", err)
+return err
+}
+
+if !stat.IsDir() {
+t.Errorf("%s is not a directory", groupDir)
+return fmt.Errorf("not a directory")
+}
+
+// 列举文件
+entries, err := os.ReadDir(groupDir)
+if err != nil {
+t.Errorf("failed to read directory: %v", err)
+return err
+}
+
+// 验证文件计数
+if len(entries) != expectedCount {
+t.Errorf("expected %d files in group, got %d", expectedCount, len(entries))
+return fmt.Errorf("file count mismatch: expected %d, got %d", expectedCount, len(entries))
+}
+
+// 验证期望的文件名（若提供）
+if len(expectedNames) > 0 {
+fileNames := make(map[string]bool)
+for _, e := range entries {
+fileNames[e.Name()] = true
+}
+for _, expectedName := range expectedNames {
+if !fileNames[expectedName] {
+t.Errorf("expected file not found: %s", expectedName)
+return fmt.Errorf("file not found: %s", expectedName)
+}
+}
+}
+
+return nil
+}
+
+// 【工具函数 2】setupTestDuplicateGroup - 创建测试数据
+func setupTestDuplicateGroup(t *testing.T, groupName string, fileCount int) ([]ImageInfo, string) {
+tmpDir := t.TempDir()
+
+var files []ImageInfo
+for i := 0; i < fileCount; i++ {
+filename := filepath.Join(tmpDir, fmt.Sprintf("file_%d.jpg", i))
+
+// 创建测试图像（不同大小）
+img := image.NewRGBA(image.Rect(0, 0, 100+i*10, 100))
+f, err := os.Create(filename)
+if err != nil {
+t.Fatal(err)
+}
+jpeg.Encode(f, img, nil)
+f.Close()
+
+// 获取文件信息
+info, err := os.Stat(filename)
+if err != nil {
+t.Fatal(err)
+}
+
+files = append(files, ImageInfo{
+Path: filename,
+Size: info.Size(),
+})
+}
+
+return files, tmpDir
+}
+
+// 【测试函数 3】TestAutoMode_RootCopyFailure - 验证根目录失败场景
+func TestAutoMode_RootCopyFailure(t *testing.T) {
+tmpDir := t.TempDir()
+
+// SETUP：创建测试文件
+files, inputDir := setupTestDuplicateGroup(t, "fail", 3)
+defer os.RemoveAll(inputDir)
+
+cfg := DefaultConfig()
+cfg.Auto = true
+cfg.DryRun = false
+dupGroups := []DuplicateGroup{{Files: files}}
+
+// EXECUTE
+_, err := handleAutoMode(tmpDir, cfg, dupGroups, 3, nil)
+if err != nil {
+t.Fatal(err)
+}
+
+// VERIFY：group 目录中的文件仍应全部存在
+groupDir := filepath.Join(tmpDir, "dedup-auto", "group-1")
+if err := assertFilesInGroup(t, groupDir, 3, nil); err != nil {
+t.Errorf("group directory verification failed: %v", err)
+}
+}
+
+// 【测试函数 4】TestAutoMode_DryRunEnhanced - 验证增强的 DryRun 模式
+func TestAutoMode_DryRunEnhanced(t *testing.T) {
+tmpDir := t.TempDir()
+
+// SETUP
+files, inputDir := setupTestDuplicateGroup(t, "dryrun", 3)
+defer os.RemoveAll(inputDir)
+
+cfg := DefaultConfig()
+cfg.Auto = true
+cfg.DryRun = true
+dupGroups := []DuplicateGroup{{Files: files}}
+
+// EXECUTE
+result, err := handleAutoMode(tmpDir, cfg, dupGroups, 3, nil)
+if err != nil {
+t.Fatal(err)
+}
+
+// VERIFY：dedup-auto 目录不存在
+dedupRoot := filepath.Join(tmpDir, "dedup-auto")
+if _, err := os.Stat(dedupRoot); !os.IsNotExist(err) {
+t.Errorf("dedup-auto directory should not exist in DryRun mode")
+}
+
+// VERIFY：统计计算仍然正确
+if result.TotalGroups != 1 || result.TotalDupes != 2 {
+t.Errorf("statistics incorrect in DryRun mode: groups=%d, dupes=%d", result.TotalGroups, result.TotalDupes)
+}
+}
