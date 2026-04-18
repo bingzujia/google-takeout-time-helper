@@ -12,6 +12,7 @@ type FileType struct {
 	MimeType  string
 	NewExt    string // target extension if rename needed, empty if no rename
 	Supported bool   // whether exiftool can write to this format
+	TypeKnown bool   // true if the MIME type maps to a known extension
 }
 
 var fileTypeCacheMu sync.Mutex
@@ -47,6 +48,7 @@ func DetectFileAll(filePath string) (*FileType, error) {
 		MimeType:  mimeType,
 		NewExt:    newExt,
 		Supported: supported,
+		TypeKnown: targetExt != "",
 	}
 
 	fileTypeCacheMu.Lock()

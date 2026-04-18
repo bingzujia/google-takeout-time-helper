@@ -25,6 +25,10 @@ var fixExifCmd = &cobra.Command{
 given directory (first level only, non-recursive) and writes the same value to
 CreateDate and ModifyDate, using exiftool.
 
+Files without a DateTimeOriginal field are skipped.
+Files whose extension does not match the actual content (e.g. a JPEG named .png)
+are temporarily renamed to the correct extension, processed, then restored.
+
 Requires exiftool to be installed and available in PATH.`,
 	RunE: runFixExif,
 }
@@ -82,7 +86,6 @@ func runFixExif(_ *cobra.Command, _ []string) error {
 		progress.Success("Dry-run complete. Would process: %d, Skipped: %d", len(mediaFiles), skipped)
 		return nil
 	}
-
 	// Open log file for structured logging.
 	logger, err := logutil.OpenLog(fixExifDir, "fix-exif", false)
 	if err != nil {
@@ -90,22 +93,32 @@ func runFixExif(_ *cobra.Command, _ []string) error {
 	}
 	defer logger.Close()
 
-	writeLog := func(filePath, detail string) {
+	logFail := func(filePath, detail string) {
 		logger.Fail("write-exif", filePath, detail)
 	}
+	logSkip := func(filePath, reason string) {
+		logger.Skip(reason, filePath)
+	}
+	logInfo := func(filePath, detail string) {
+		logger.Info(detail, filePath)
+	}
 
-	processed, failed := 0, 0
+	processed, failed, noExif := 0, 0, 0
 	writer := migrator.ExifWriter{}
-	processed, failed = runFixExifFiles(mediaFiles, fixExifRunOptions{
+	processed, failed, noExif = runFixExifFiles(mediaFiles, fixExifRunOptions{
 		DryRun:           false,
+		PrepareFile:      prepareFileForExif,
 		ResolveTimestamp: resolveTimestamp,
 		WriteTimestamp:   writer.WriteTimestamp,
-		WriteLog:         writeLog,
+		WriteLog:         logFail,
+		LogSkip:          logSkip,
+		LogInfo:          logInfo,
 		ReportFailure:    reportFixExifFailure,
 		WorkerCount:      fixExifWorkerCount(),
 		ShowProgress:     true,
 	})
 
+	skipped += noExif
 	if failed > 0 {
 		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
 		progress.Info("Log: %s", logger.Path())
@@ -117,10 +130,13 @@ func runFixExif(_ *cobra.Command, _ []string) error {
 
 type fixExifRunOptions struct {
 	DryRun           bool
-	ResolveTimestamp func(string) (time.Time, string, bool)
+	PrepareFile      func(string) (workPath string, cleanup func() error, mismatch string, err error)
+	ResolveTimestamp func(string) (time.Time, bool)
 	WriteTimestamp   func(string, time.Time) error
 	WriteLog         func(string, string)
-	ReportDryRun     func(string, time.Time, string, bool)
+	LogSkip          func(string, string)
+	LogInfo          func(string, string)
+	ReportDryRun     func(string, time.Time, bool)
 	ReportFailure    func(string, string)
 	WorkerCount      int
 	ShowProgress     bool
@@ -159,9 +175,9 @@ func fixExifWorkerCount() int {
 	return workers
 }
 
-func runFixExifFiles(mediaFiles []string, opts fixExifRunOptions) (processed, failed int) {
+func runFixExifFiles(mediaFiles []string, opts fixExifRunOptions) (processed, failed, skipped int) {
 	if len(mediaFiles) == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 
 	workers := opts.WorkerCount
@@ -173,6 +189,7 @@ func runFixExifFiles(mediaFiles []string, opts fixExifRunOptions) (processed, fa
 	var mu sync.Mutex
 	var processedCount int
 	var failedCount int
+	var skippedCount int
 	var completed atomic.Int64
 
 	reporter := progress.NewReporter(len(mediaFiles), opts.ShowProgress)
@@ -185,56 +202,88 @@ func runFixExifFiles(mediaFiles []string, opts fixExifRunOptions) (processed, fa
 		go func() {
 			defer wg.Done()
 			for filePath := range jobCh {
-				if opts.DryRun {
-					t, src, ok := opts.ResolveTimestamp(filePath)
-					if opts.ReportDryRun != nil {
+				func() {
+					if opts.DryRun {
+						t, ok := opts.ResolveTimestamp(filePath)
+						if opts.ReportDryRun != nil {
+							mu.Lock()
+							opts.ReportDryRun(filePath, t, ok)
+							mu.Unlock()
+						}
+						return
+					}
+
+					workPath := filePath
+					var mismatch string
+					cleanup := func() error { return nil }
+
+					if opts.PrepareFile != nil {
+						var err error
+						workPath, cleanup, mismatch, err = opts.PrepareFile(filePath)
+						if err != nil {
+							mu.Lock()
+							skippedCount++
+							if opts.LogSkip != nil {
+								opts.LogSkip(filePath, err.Error())
+							}
+							mu.Unlock()
+							return
+						}
+					}
+
+					t, ok := opts.ResolveTimestamp(workPath)
+					if !ok {
+						_ = cleanup()
 						mu.Lock()
-						opts.ReportDryRun(filePath, t, src, ok)
+						skippedCount++
+						if opts.LogSkip != nil {
+							opts.LogSkip(filePath, "no DateTimeOriginal")
+						}
+						mu.Unlock()
+						return
+					}
+
+					if err := opts.WriteTimestamp(workPath, t); err != nil {
+						_ = cleanup()
+						detail := err.Error()
+						mu.Lock()
+						failedCount++
+						if opts.WriteLog != nil {
+							opts.WriteLog(filePath, detail)
+						}
+						if opts.ReportFailure != nil {
+							opts.ReportFailure(filePath, detail)
+						}
+						mu.Unlock()
+						return
+					}
+
+					if err := cleanup(); err != nil {
+						mu.Lock()
+						failedCount++
+						detail := fmt.Sprintf("restore rename failed: %v", err)
+						if opts.WriteLog != nil {
+							opts.WriteLog(filePath, detail)
+						}
+						if opts.ReportFailure != nil {
+							opts.ReportFailure(filePath, detail)
+						}
+						mu.Unlock()
+						return
+					}
+
+					if mismatch != "" {
+						mu.Lock()
+						if opts.LogInfo != nil {
+							opts.LogInfo(filePath, mismatch)
+						}
 						mu.Unlock()
 					}
-					reporter.Update(int(completed.Add(1)))
-					continue
-				}
 
-				t, src, ok := opts.ResolveTimestamp(filePath)
-				if !ok {
 					mu.Lock()
-					failedCount++
-					if opts.WriteLog != nil {
-						opts.WriteLog(filePath, "no DateTimeOriginal and no filename timestamp")
-					}
-					if opts.ReportFailure != nil {
-						opts.ReportFailure(filePath, "no DateTimeOriginal and no filename timestamp")
-					}
+					processedCount++
 					mu.Unlock()
-					reporter.Update(int(completed.Add(1)))
-					continue
-				}
-
-				if src == "filename" && opts.WriteLog != nil {
-					mu.Lock()
-					opts.WriteLog(filePath, "no DateTimeOriginal; timestamp from filename")
-					mu.Unlock()
-				}
-
-				if err := opts.WriteTimestamp(filePath, t); err != nil {
-					detail := err.Error()
-					mu.Lock()
-					failedCount++
-					if opts.WriteLog != nil {
-						opts.WriteLog(filePath, detail)
-					}
-					if opts.ReportFailure != nil {
-						opts.ReportFailure(filePath, detail)
-					}
-					mu.Unlock()
-					reporter.Update(int(completed.Add(1)))
-					continue
-				}
-
-				mu.Lock()
-				processedCount++
-				mu.Unlock()
+				}()
 				reporter.Update(int(completed.Add(1)))
 			}
 		}()
@@ -246,16 +295,18 @@ func runFixExifFiles(mediaFiles []string, opts fixExifRunOptions) (processed, fa
 	close(jobCh)
 	wg.Wait()
 
-	return processedCount, failedCount
+	return processedCount, failedCount, skippedCount
 }
 
-func reportFixExifDryRun(filePath string, t time.Time, src string, ok bool) {
+// resolveTimestamp reads the DateTimeOriginal EXIF field from the given media
+// file. Returns (zero, false) if the field is absent.
+func resolveTimestamp(filePath string) (t time.Time, ok bool) {
+	return parser.ParseEXIFTimestamp(filePath)
+}
+
+func reportFixExifDryRun(filePath string, t time.Time, ok bool) {
 	if !ok {
-		progress.Info("  %s  (no DateTimeOriginal and no filename timestamp)", filePath)
-		return
-	}
-	if src == "filename" {
-		progress.Info("  %s  DateTimeOriginal=%s (from filename)", filePath, t.Format("2006:01:02 15:04:05"))
+		progress.Info("  %s  (no DateTimeOriginal; will skip)", filePath)
 		return
 	}
 	progress.Info("  %s  DateTimeOriginal=%s", filePath, t.Format("2006:01:02 15:04:05"))
@@ -265,15 +316,42 @@ func reportFixExifFailure(filePath, detail string) {
 	progress.Error("FAIL %s: %s", filepath.Base(filePath), detail)
 }
 
-// resolveTimestamp tries to obtain a timestamp for the given media file.
-// It first checks the EXIF DateTimeOriginal field; if absent, it falls back to
-// parsing the filename. The returned source is "exif" or "filename".
-func resolveTimestamp(filePath string) (t time.Time, source string, ok bool) {
-	if t, ok = parser.ParseEXIFTimestamp(filePath); ok {
-		return t, "exif", true
+// prepareFileForExif checks whether the file's extension matches its actual
+// content. If there is a mismatch, the file is temporarily renamed to the
+// correct extension so exiftool can operate on it.
+//
+// Returns:
+//   - workPath: path to pass to exiftool (may differ from filePath)
+//   - cleanup: must be called after exiftool operations to restore the original name
+//   - mismatch: non-empty description of the mismatch (for logging on success)
+//   - err: non-nil when the actual type is known but cannot be mapped to an
+//     extension — the caller should skip the file
+//
+// If file-type detection fails entirely (e.g. the `file` command is absent),
+// the file is returned unchanged so exiftool can attempt it anyway.
+func prepareFileForExif(filePath string) (workPath string, cleanup func() error, mismatch string, err error) {
+	ft, detErr := migrator.DetectFileAll(filePath)
+	if detErr != nil {
+		// Detection unavailable; fall through and let exiftool try.
+		return filePath, func() error { return nil }, "", nil
 	}
-	if t, ok = parser.ParseFilenameTimestamp(filePath); ok {
-		return t, "filename", true
+	if !ft.TypeKnown {
+		return "", nil, "", fmt.Errorf("unknown file type: %s", ft.MimeType)
 	}
-	return time.Time{}, "", false
+	if ft.NewExt == "" {
+		// Extension already matches the actual content.
+		return filePath, func() error { return nil }, "", nil
+	}
+
+	// Mismatch: rename to correct extension before calling exiftool.
+	dir := filepath.Dir(filePath)
+	stem := strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+	tmpPath := filepath.Join(dir, stem+ft.NewExt)
+	if err := os.Rename(filePath, tmpPath); err != nil {
+		return "", nil, "", fmt.Errorf("rename for exiftool: %w", err)
+	}
+
+	oldExt := strings.ToLower(filepath.Ext(filePath))
+	msg := fmt.Sprintf("extension mismatch: %s→%s", oldExt, ft.NewExt)
+	return tmpPath, func() error { return os.Rename(tmpPath, filePath) }, msg, nil
 }

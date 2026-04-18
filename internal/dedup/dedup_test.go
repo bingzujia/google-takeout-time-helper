@@ -408,34 +408,6 @@ resultSerial.TotalDupes, resultUnlimited.TotalDupes)
 }
 }
 
-// TestAutoMode_SelectBestFile tests the selectBestFile priority algorithm
-func TestAutoMode_SelectBestFile(t *testing.T) {
-// Test 1: By size (largest first)
-files := []ImageInfo{
-{Path: "small.jpg", Size: 1000},
-{Path: "large.jpg", Size: 5000},
-{Path: "medium.jpg", Size: 3000},
-}
-bestIdx := selectBestFile(files)
-if bestIdx != 1 || files[bestIdx].Path != "large.jpg" {
-t.Errorf("expected index 1 (large.jpg), got index %d (%s)", bestIdx, files[bestIdx].Path)
-}
-
-// Test 2: Empty list
-emptyFiles := []ImageInfo{}
-bestIdx = selectBestFile(emptyFiles)
-if bestIdx != -1 {
-t.Errorf("expected -1 for empty list, got %d", bestIdx)
-}
-
-// Test 3: Single file
-singleFile := []ImageInfo{{Path: "only.jpg", Size: 1000}}
-bestIdx = selectBestFile(singleFile)
-if bestIdx != 0 {
-t.Errorf("expected 0 for single file, got %d", bestIdx)
-}
-}
-
 // TestAutoMode_CopyFile tests file copying with 32KB buffer
 func TestAutoMode_CopyFile(t *testing.T) {
 tmpDir := t.TempDir()
@@ -505,22 +477,6 @@ t.Errorf("group-1 directory not created")
 }
 }
 
-
-// BenchmarkSelectBestFile benchmarks the selectBestFile function
-func BenchmarkSelectBestFile(b *testing.B) {
-files := []ImageInfo{
-{Path: "file1.jpg", Size: 1000},
-{Path: "file2.jpg", Size: 5000},
-{Path: "file3.jpg", Size: 3000},
-{Path: "file4.jpg", Size: 2000},
-{Path: "file5.jpg", Size: 4500},
-}
-
-b.ResetTimer()
-for i := 0; i < b.N; i++ {
-selectBestFile(files)
-}
-}
 
 // BenchmarkCopyFile benchmarks the copyFile function
 func BenchmarkCopyFile(b *testing.B) {
@@ -681,10 +637,10 @@ Size: info.Size(),
 return files, tmpDir
 }
 
-// 【测试函数 3】TestAutoMode_RootCopyFailure - 验证根目录失败场景
-// 【测试函数 3】TestAutoMode_RootCopyFailure - 验证根目录失败场景
-// 【测试函数 3】TestAutoMode_RootCopyFailure - 验证根目录失败场景
-func TestAutoMode_RootCopyFailure(t *testing.T) {
+// 【测试函数 3】TestAutoMode_NormalOperation - 验证标准操作场景
+// 【测试函数 3】TestAutoMode_NormalOperation - 验证标准操作场景
+// 【测试函数 3】TestAutoMode_NormalOperation - 验证标准操作场景
+func TestAutoMode_NormalOperation(t *testing.T) {
 rootDir := t.TempDir()
 
 // SETUP：创建测试文件在 rootDir 内

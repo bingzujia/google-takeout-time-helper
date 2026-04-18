@@ -11,13 +11,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/bingzujia/google-takeout-time-helper/internal/hashcache"
 	"github.com/bingzujia/google-takeout-time-helper/internal/migrator"
 	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
 	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
 	"github.com/corona10/goimagehash"
+
 )
 
 // supported image extensions
@@ -191,17 +191,17 @@ func handleStandardMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, 
 		SpaceReclaim: 0,
 		Errors:       initErrors,
 	}
-	
+
 	dedupDir := filepath.Join(rootDir, "dedup")
-	
+
 	for i, group := range dupGroups {
 		if len(group.Files) < 2 {
 			continue
 		}
-		
+
 		groupName := fmt.Sprintf("group-%d", i+1)
 		groupDir := filepath.Join(dedupDir, groupName)
-		
+
 		for _, f := range group.Files {
 			dest, err := destPathWithSuffix(groupDir, filepath.Base(f.Path))
 			if err != nil {
@@ -211,7 +211,7 @@ func handleStandardMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, 
 				})
 				continue
 			}
-			
+
 			if !cfg.DryRun {
 				if err := os.MkdirAll(groupDir, 0755); err != nil {
 					result.Errors = append(result.Errors, FileError{
@@ -229,7 +229,7 @@ func handleStandardMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, 
 				}
 			}
 		}
-		
+
 		result.TotalGroups++
 		result.TotalDupes += len(group.Files) - 1
 		for i, f := range group.Files {
@@ -238,7 +238,7 @@ func handleStandardMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, 
 			}
 		}
 	}
-	
+
 	return result, nil
 }
 
@@ -248,11 +248,11 @@ func destPathWithSuffix(dir, base string) (string, error) {
 	if _, err := os.Stat(candidate); os.IsNotExist(err) {
 		return candidate, nil
 	}
-	
+
 	// 添加数字后缀
 	ext := filepath.Ext(base)
 	name := base[:len(base)-len(ext)]
-	
+
 	const maxAttempts = 10000
 	for i := 1; i < maxAttempts; i++ {
 		candidate := filepath.Join(dir, fmt.Sprintf("%s_%d%s", name, i, ext))
@@ -267,83 +267,7 @@ func destPathWithSuffix(dir, base string) (string, error) {
 	return "", fmt.Errorf("could not find available filename after %d attempts in %s", maxAttempts, dir)
 }
 
-// selectBestFile 根据 3 级优先级（体积最大 > ModTime最早 > 字典序最小）选择保留文件
-func selectBestFile(files []ImageInfo) int {
-	if len(files) == 0 {
-		return -1
-	}
-	if len(files) == 1 {
-		return 0
-	}
-	
-	bestIdx := 0
-	
-	// 优先级 1：比较体积（最大优先）
-	for i := 1; i < len(files); i++ {
-		if files[i].Size > files[bestIdx].Size {
-			bestIdx = i
-		}
-	}
-	
-	// 检查是否有其他文件体积相同
-	candidates := []int{bestIdx}
-	for i := 0; i < len(files); i++ {
-		if i != bestIdx && files[i].Size == files[bestIdx].Size {
-			candidates = append(candidates, i)
-		}
-	}
-	
-	// 如果只有一个最大文件，返回
-	if len(candidates) == 1 {
-		return bestIdx
-	}
-	
-	// 优先级 2：在相同体积中比较 ModTime（最早优先）
-	// 获取文件信息用于 ModTime 比较
-	var bestTime time.Time
-	var bestTimeSet bool
-	bestIdx = candidates[0]
-	if fi, err := os.Stat(files[bestIdx].Path); err == nil {
-		bestTime = fi.ModTime()
-		bestTimeSet = true
-	}
-	
-	for _, idx := range candidates[1:] {
-		if fi, err := os.Stat(files[idx].Path); err == nil {
-			if !bestTimeSet || fi.ModTime().Before(bestTime) {
-				bestIdx = idx
-				bestTime = fi.ModTime()
-				bestTimeSet = true
-			}
-		}
-	}
-	
-	// 检查是否有相同 ModTime 的文件
-	candidates2 := []int{bestIdx}
-	for _, idx := range candidates {
-		if idx != bestIdx {
-			if fi, err := os.Stat(files[idx].Path); err == nil {
-				if fi.ModTime().Equal(bestTime) {
-					candidates2 = append(candidates2, idx)
-				}
-			}
-		}
-	}
-	
-	if len(candidates2) == 1 {
-		return bestIdx
-	}
-	
-	// 优先级 3：字典序（最小优先）
-	bestIdx = candidates2[0]
-	for _, idx := range candidates2[1:] {
-		if files[idx].Path < files[bestIdx].Path {
-			bestIdx = idx
-		}
-	}
-	
-	return bestIdx
-}
+
 
 // copyFile 使用 32KB 缓冲复制文件
 func copyFile(src, dst string) error {
@@ -352,25 +276,25 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("open source failed: %w", err)
 	}
 	defer source.Close()
-	
+
 	destination, err := os.Create(dst)
 	if err != nil {
 		return fmt.Errorf("create destination failed: %w", err)
 	}
 	defer destination.Close()
-	
+
 	// 使用 32KB 缓冲复制
 	buf := make([]byte, 32*1024)
 	_, err = copyWithBuffer(destination, source, buf)
 	if err != nil {
 		return fmt.Errorf("copy failed: %w", err)
 	}
-	
+
 	// 保留原文件权限
 	if fi, err := os.Stat(src); err == nil {
 		os.Chmod(dst, fi.Mode())
 	}
-	
+
 	return nil
 }
 
@@ -408,21 +332,21 @@ func handleAutoMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, tota
 		SpaceReclaim: 0,
 		Errors:       initErrors,
 	}
-	
+
 	dedupDir := filepath.Join(rootDir, "dedup-auto")
 	rootDedupDir := filepath.Join(rootDir, "dedup-auto")
-	
+
 	for i, group := range dupGroups {
 		if len(group.Files) < 2 {
 			continue
 		}
-		
+
 		// 使用 group.Keep（与 Run() 中的计算一致）保留在根目录的文件
 		bestIdx := group.Keep
-		
+
 		groupName := fmt.Sprintf("group-%d", i+1)
 		groupDir := filepath.Join(dedupDir, groupName)
-		
+
 		for j, f := range group.Files {
 			// 保留的文件：复制到根目录的 dedup-auto
 			if j == bestIdx {
@@ -448,17 +372,17 @@ func handleAutoMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, tota
 					}
 				}
 			}
-			
+
 			// 所有文件都复制到 group-xxx（无论根目录操作是否成功）
-dest, err := destPathWithSuffix(groupDir, filepath.Base(f.Path))
-if err != nil {
-result.Errors = append(result.Errors, FileError{
-Path:  f.Path,
-Error: fmt.Sprintf("group dest path failed: %v", err),
-})
-continue
-}
-if !cfg.DryRun {
+			dest, err := destPathWithSuffix(groupDir, filepath.Base(f.Path))
+			if err != nil {
+				result.Errors = append(result.Errors, FileError{
+					Path:  f.Path,
+					Error: fmt.Sprintf("group dest path failed: %v", err),
+				})
+				continue
+			}
+			if !cfg.DryRun {
 				if err := os.MkdirAll(groupDir, 0755); err != nil {
 					result.Errors = append(result.Errors, FileError{
 						Path:  f.Path,
@@ -474,7 +398,7 @@ if !cfg.DryRun {
 				}
 			}
 		}
-		
+
 		result.TotalGroups++
 		result.TotalDupes += len(group.Files) - 1
 		for i, f := range group.Files {
@@ -483,7 +407,7 @@ if !cfg.DryRun {
 			}
 		}
 	}
-	
+
 	return result, nil
 }
 

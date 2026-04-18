@@ -33,6 +33,7 @@ var (
 	dedupMaxDecodeMB   int
 	dedupDecodeWorkers int
 	dedupInputDir      string
+	dedupAuto          bool
 )
 
 func init() {
@@ -42,6 +43,7 @@ func init() {
 	dedupCmd.Flags().StringVar(&dedupCacheDir, "cache-dir", "", "directory for hash cache DB (default: <input_dir>/.gtoh_cache)")
 	dedupCmd.Flags().IntVar(&dedupMaxDecodeMB, "max-decode-mb", 500, "skip images larger than this size (MB) to prevent OOM")
 	dedupCmd.Flags().IntVar(&dedupDecodeWorkers, "decode-workers", 0, "max concurrent image decodes (0 = unlimited)")
+	dedupCmd.Flags().BoolVar(&dedupAuto, "auto", false, "automatic mode: keep largest file in root dir, all files in group-xxx/")
 	dedupCmd.Flags().StringVar(&dedupInputDir, "input-dir", "", "input directory to scan for duplicates")
 	_ = dedupCmd.MarkFlagRequired("input-dir")
 	rootCmd.AddCommand(dedupCmd)
@@ -74,6 +76,7 @@ func runDedup(_ *cobra.Command, _ []string) error {
 		CacheDir:      dedupCacheDir,
 		MaxDecodeMB:   dedupMaxDecodeMB,
 		DecodeWorkers: dedupDecodeWorkers,
+		Auto:          dedupAuto,
 	}
 	result, err := dedup.Run(inputDir, cfg)
 	if err != nil {

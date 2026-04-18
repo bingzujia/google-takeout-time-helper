@@ -57,9 +57,9 @@ func TestOpenLog_DryRun(t *testing.T) {
 		t.Errorf("dry-run should return empty path, got: %s", logger.Path())
 	}
 
-	logDir := filepath.Join(dir, "gtoh-log")
+	logDir := filepath.Join(dir, LogDirName())
 	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
-		t.Errorf("dry-run should not create gtoh-log dir")
+		t.Errorf("dry-run should not create %s dir", LogDirName())
 	}
 }
 

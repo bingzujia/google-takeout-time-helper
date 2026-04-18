@@ -14,7 +14,7 @@ type ExifWriter struct{}
 // WriteTimestamp writes DateTimeOriginal and FileModifyDate to a file.
 func (w *ExifWriter) WriteTimestamp(filePath string, t time.Time) error {
 	exifTime := t.Format("2006:01:02 15:04:05")
-	cmd := exec.Command("exiftool", "-overwrite_original",
+	cmd := exec.Command("exiftool", "-ignoreMinorErrors", "-overwrite_original",
 		"-DateTimeOriginal="+exifTime,
 		"-FileModifyDate="+exifTime,
 		filePath)

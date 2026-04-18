@@ -11,6 +11,26 @@ import (
 	"time"
 )
 
+var (
+	logDirNameOnce sync.Once
+	logDirNameVal  string
+)
+
+// LogDirName returns the log directory name derived from the running binary:
+// filepath.Base(os.Args[0]) + "-log" (e.g. "takeout-helper-log").
+// The result is computed once and cached.
+func LogDirName() string {
+	logDirNameOnce.Do(func() {
+		bin := filepath.Base(os.Args[0])
+		// Strip any OS-specific extension (e.g. ".exe" on Windows).
+		if ext := filepath.Ext(bin); ext != "" {
+			bin = strings.TrimSuffix(bin, ext)
+		}
+		logDirNameVal = bin + "-log"
+	})
+	return logDirNameVal
+}
+
 // Logger writes structured log entries to a file.
 // It is safe to use from multiple goroutines concurrently.
 type Logger struct {
@@ -71,16 +91,17 @@ var indexRe = regexp.MustCompile(`-(\d{3})\.log$`)
 
 // OpenLog opens (or creates) a log file at:
 //
-//	<baseDir>/gtoh-log/<command>-<date>-<NNN>.log
+//	<baseDir>/<LogDirName()>/<command>-<date>-<NNN>.log
 //
 // where date is today's date in YYYY-MM-DD and NNN is auto-incremented per-day.
+// The log directory name is derived from the running binary name (e.g. "takeout-helper-log").
 // If dryRun is true, a no-op logger is returned without touching the filesystem.
 func OpenLog(baseDir, command string, dryRun bool) (*Logger, error) {
 	if dryRun {
 		return Nop(), nil
 	}
 
-	logDir := filepath.Join(baseDir, "gtoh-log")
+	logDir := filepath.Join(baseDir, LogDirName())
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, fmt.Errorf("create log dir %q: %w", logDir, err)
 	}

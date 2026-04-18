@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,12 +57,12 @@ func runFixName(_ *cobra.Command, _ []string) error {
 	}
 
 	if fixNameDryRun {
-		processed, noparse := runFixNameFiles(mediaFiles, fixNameRunOptions{
-			DryRun:      true,
-			WorkerCount: fixExifWorkerCount(),
+		processed, _, noDate := runFixNameFiles(mediaFiles, fixNameRunOptions{
+			DryRun:       true,
+			WorkerCount:  fixExifWorkerCount(),
 			ShowProgress: true,
 		})
-		progress.Success("Dry-run complete. Would process: %d, No filename datetime: %d, Skipped (not earlier): already counted, Other: %d", processed, noparse, 0)
+		progress.Success("Dry-run complete. Would write: %d, No filename datetime: %d, Skipped (not earlier): shown above", processed, noDate)
 		return nil
 	}
 
@@ -74,16 +75,26 @@ func runFixName(_ *cobra.Command, _ []string) error {
 	writeLog := func(filePath, detail string) {
 		logger.Fail("write-exif", filePath, detail)
 	}
+	logSkip := func(filePath, reason string) {
+		logger.Skip(reason, filePath)
+	}
+	logInfo := func(filePath, detail string) {
+		logger.Info(detail, filePath)
+	}
 
 	writer := migrator.ExifWriter{}
-	processed, failed := runFixNameFiles(mediaFiles, fixNameRunOptions{
-		DryRun:      false,
-		WriteAll:    writer.WriteTimestamp,
-		WriteLog:    writeLog,
-		WorkerCount: fixExifWorkerCount(),
+	processed, failed, noDate := runFixNameFiles(mediaFiles, fixNameRunOptions{
+		DryRun:       false,
+		PrepareFile:  prepareFileForExif,
+		WriteAll:     writer.WriteTimestamp,
+		WriteLog:     writeLog,
+		LogSkip:      logSkip,
+		LogInfo:      logInfo,
+		WorkerCount:  fixExifWorkerCount(),
 		ShowProgress: true,
 	})
 
+	skipped += noDate
 	if failed > 0 {
 		progress.Success("Done. Processed: %d, Failed: %d, Skipped: %d", processed, failed, skipped)
 		progress.Info("Log: %s", logger.Path())
@@ -95,16 +106,28 @@ func runFixName(_ *cobra.Command, _ []string) error {
 
 type fixNameRunOptions struct {
 	DryRun       bool
+	PrepareFile  func(string) (workPath string, cleanup func() error, mismatch string, err error)
 	WriteAll     func(string, time.Time) error
 	WriteLog     func(string, string)
+	LogSkip      func(string, string)
+	LogInfo      func(string, string)
 	WorkerCount  int
 	ShowProgress bool
 }
 
-// runFixNameFiles processes files and returns (processed, noFilenameDate) counts.
-func runFixNameFiles(mediaFiles []string, opts fixNameRunOptions) (processed, noFilenameDate int) {
+// isPXLFile reports whether filename has the PXL_ prefix used by Google Pixel
+// cameras. Pixel embeds UTC in the filename, so the timestamp must be shifted
+// to local time before writing to EXIF.
+func isPXLFile(filename string) bool {
+	return strings.HasPrefix(strings.ToUpper(filepath.Base(filename)), "PXL_")
+}
+
+// runFixNameFiles processes files and returns (processed, failed, skipped) counts.
+// skipped covers files with no parseable filename datetime and files that could
+// not have their type detected.
+func runFixNameFiles(mediaFiles []string, opts fixNameRunOptions) (processed, failed, skipped int) {
 	if len(mediaFiles) == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 
 	workers := opts.WorkerCount
@@ -114,7 +137,7 @@ func runFixNameFiles(mediaFiles []string, opts fixNameRunOptions) (processed, no
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var processedCount, noDateCount int
+	var processedCount, failedCount, skippedCount int
 	var completed atomic.Int64
 
 	reporter := progress.NewReporter(len(mediaFiles), opts.ShowProgress)
@@ -127,56 +150,81 @@ func runFixNameFiles(mediaFiles []string, opts fixNameRunOptions) (processed, no
 		go func() {
 			defer wg.Done()
 			for filePath := range jobCh {
-				nameTime, nameOk := parser.ParseFilenameTimestamp(filepath.Base(filePath))
-				if !nameOk {
-					mu.Lock()
-					noDateCount++
-					mu.Unlock()
-					reporter.Update(int(completed.Add(1)))
-					continue
-				}
+				func() {
+					nameTime, nameOk := parser.ParseFilenameTimestamp(filepath.Base(filePath))
+					if !nameOk {
+						mu.Lock()
+						skippedCount++
+						mu.Unlock()
+						return
+					}
 
-				exifTime, exifOk := parser.ParseEXIFTimestamp(filePath)
+					// PXL_ filenames embed UTC; convert to local time so EXIF
+					// receives the wall-clock value in the user's timezone.
+					if isPXLFile(filePath) {
+						nameTime = nameTime.In(time.Local)
+					}
 
-				// Write only when filename is earlier than EXIF, or EXIF is absent
-				shouldWrite := !exifOk || nameTime.Before(exifTime)
-
-				if opts.DryRun {
-					mu.Lock()
-					if shouldWrite {
+					if opts.DryRun {
+						mu.Lock()
 						processedCount++
-						action := "would write (no EXIF)"
-						if exifOk {
-							action = fmt.Sprintf("would write (filename %s < exif %s)",
-								nameTime.Format("2006-01-02 15:04:05"),
-								exifTime.Format("2006-01-02 15:04:05"))
+						progress.Info("  %s  would write: %s", filePath, nameTime.Format("2006-01-02 15:04:05"))
+						mu.Unlock()
+						return
+					}
+
+					workPath := filePath
+					var mismatch string
+					cleanup := func() error { return nil }
+
+					if opts.PrepareFile != nil {
+						var err error
+						workPath, cleanup, mismatch, err = opts.PrepareFile(filePath)
+						if err != nil {
+							mu.Lock()
+							skippedCount++
+							if opts.LogSkip != nil {
+								opts.LogSkip(filePath, err.Error())
+							}
+							mu.Unlock()
+							return
 						}
-						progress.Info("  %s  %s", filePath, action)
 					}
-					mu.Unlock()
-					reporter.Update(int(completed.Add(1)))
-					continue
-				}
 
-				if !shouldWrite {
-					reporter.Update(int(completed.Add(1)))
-					continue
-				}
+					if err := opts.WriteAll(workPath, nameTime); err != nil {
+						_ = cleanup()
+						mu.Lock()
+						failedCount++
+						if opts.WriteLog != nil {
+							opts.WriteLog(filePath, err.Error())
+						}
+						mu.Unlock()
+						return
+					}
 
-				if err := opts.WriteAll(filePath, nameTime); err != nil {
-					detail := err.Error()
+					if err := cleanup(); err != nil {
+						mu.Lock()
+						failedCount++
+						detail := fmt.Sprintf("restore rename failed: %v", err)
+						if opts.WriteLog != nil {
+							opts.WriteLog(filePath, detail)
+						}
+						mu.Unlock()
+						return
+					}
+
+					if mismatch != "" {
+						mu.Lock()
+						if opts.LogInfo != nil {
+							opts.LogInfo(filePath, mismatch)
+						}
+						mu.Unlock()
+					}
+
 					mu.Lock()
-					if opts.WriteLog != nil {
-						opts.WriteLog(filePath, detail)
-					}
+					processedCount++
 					mu.Unlock()
-					reporter.Update(int(completed.Add(1)))
-					continue
-				}
-
-				mu.Lock()
-				processedCount++
-				mu.Unlock()
+				}()
 				reporter.Update(int(completed.Add(1)))
 			}
 		}()
@@ -188,5 +236,5 @@ func runFixNameFiles(mediaFiles []string, opts fixNameRunOptions) (processed, no
 	close(jobCh)
 	wg.Wait()
 
-	return processedCount, noDateCount
+	return processedCount, failedCount, skippedCount
 }

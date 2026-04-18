@@ -579,9 +579,9 @@ func checkOutputDir(dir string) error {
 	}
 	// Count entries that are not created by the tool itself
 	toolDirs := map[string]bool{
-		"gtoh-log":    true,
-		"metadata":    true,
-		"manual_review": true,
+		logutil.LogDirName(): true,
+		"metadata":           true,
+		"manual_review":      true,
 	}
 	userEntries := 0
 	for _, e := range entries {
