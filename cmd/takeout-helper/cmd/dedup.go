@@ -99,18 +99,36 @@ func runDedup(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// Output detailed group logging
+	outputGroupLogging(result, inputDir, dedupAuto)
+
 	// Tasks 2.2 + 2.3: move (or preview) each group
 	dedupDir := filepath.Join(inputDir, "dedup")
+	dedupAutoDir := filepath.Join(inputDir, "dedup-auto")
 	totalMoved := 0
 
 	for i, group := range result.Groups {
 		groupName := fmt.Sprintf("group-%03d", i+1)
-		groupDir := filepath.Join(dedupDir, groupName)
 
-		fmt.Printf("[%s] %d duplicate file(s):\n", groupName, len(group.Files))
-		for _, f := range group.Files {
-			dest := destPath(groupDir, filepath.Base(f.Path))
-			fmt.Printf("  %s → %s\n", f.Path, dest)
+		for j, f := range group.Files {
+			var dest string
+			var groupDir string
+
+			if dedupAuto {
+				if j == group.Keep {
+					// Kept file to root dedup-auto directory
+					dest = filepath.Join(dedupAutoDir, filepath.Base(f.Path))
+					groupDir = dedupAutoDir
+				} else {
+					// Non-kept file to group subdirectory
+					groupDir = filepath.Join(dedupAutoDir, groupName)
+					dest = filepath.Join(groupDir, filepath.Base(f.Path))
+				}
+			} else {
+				// Standard mode: all files to group subdirectory under dedup
+				groupDir = filepath.Join(dedupDir, groupName)
+				dest = destPath(groupDir, filepath.Base(f.Path))
+			}
 
 			if !dedupDryRun {
 				if err := os.MkdirAll(groupDir, 0755); err != nil {
@@ -163,3 +181,69 @@ func destPath(dir, base string) string {
 		}
 	}
 }
+
+// outputGroupLogging outputs detailed log for each duplicate group.
+// For standard mode (isAutoMode=false): all files → dedup/group-NNN/
+// For auto mode (isAutoMode=true): kept file → dedup-auto/, others → dedup-auto/group-NNN/
+func outputGroupLogging(result *dedup.Result, inputDir string, isAutoMode bool) {
+	if result == nil || result.TotalGroups == 0 {
+		return
+	}
+
+	// Handle nil Groups field
+	if result.Groups == nil {
+		return
+	}
+
+	for i, group := range result.Groups {
+		// Skip empty or single-file groups
+		if len(group.Files) < 2 {
+			continue
+		}
+
+		// Generate group name (3-digit format)
+		groupName := fmt.Sprintf("group-%03d", i+1)
+
+		// Output group header
+		fmt.Printf("[%s] %d duplicate file(s):\n", groupName, len(group.Files))
+
+		// Iterate through each file
+		for j, file := range group.Files {
+			// Validate file path
+			if file.Path == "" {
+				fmt.Fprintf(os.Stderr, "WARNING: %s: empty file path at index %d\n", groupName, j)
+				continue
+			}
+
+			filename := filepath.Base(file.Path)
+
+			// Calculate destination path
+			var destPath string
+			if isAutoMode {
+				if j == group.Keep {
+					// Kept file to root directory
+					destPath = filepath.Join(inputDir, "dedup-auto", filename)
+				} else {
+					// Non-kept files to subdirectory
+					destPath = filepath.Join(inputDir, "dedup-auto", groupName, filename)
+				}
+			} else {
+				// Standard mode: all files to group-xxx subdirectory
+				destPath = filepath.Join(inputDir, "dedup", groupName, filename)
+			}
+
+			// Generate [KEEP] marker (only in auto mode)
+			marker := ""
+			if isAutoMode && j == group.Keep {
+				marker = " [KEEP]"
+			}
+
+			// Output file line (special characters are output as-is, no escaping)
+			fmt.Printf("  %s → %s%s\n", file.Path, destPath, marker)
+		}
+
+		// Empty line between groups
+		fmt.Println()
+	}
+}
+

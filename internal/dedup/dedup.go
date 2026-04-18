@@ -189,6 +189,7 @@ func handleStandardMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, 
 		TotalGroups:  0,
 		TotalDupes:   0,
 		SpaceReclaim: 0,
+		Groups:       dupGroups,
 		Errors:       initErrors,
 	}
 
@@ -330,6 +331,7 @@ func handleAutoMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, tota
 		TotalGroups:  0,
 		TotalDupes:   0,
 		SpaceReclaim: 0,
+		Groups:       dupGroups,
 		Errors:       initErrors,
 	}
 
