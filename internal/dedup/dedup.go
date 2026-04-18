@@ -203,7 +203,14 @@ func handleStandardMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, 
 		groupDir := filepath.Join(dedupDir, groupName)
 		
 		for _, f := range group.Files {
-			dest := destPathWithSuffix(groupDir, filepath.Base(f.Path))
+			dest, err := destPathWithSuffix(groupDir, filepath.Base(f.Path))
+			if err != nil {
+				result.Errors = append(result.Errors, FileError{
+					Path:  f.Path,
+					Error: fmt.Sprintf("dest path failed: %v", err),
+				})
+				continue
+			}
 			
 			if !cfg.DryRun {
 				if err := os.MkdirAll(groupDir, 0755); err != nil {
@@ -235,23 +242,29 @@ func handleStandardMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, 
 	return result, nil
 }
 
-// destPathWithSuffix 返回目标路径，避免覆盖现有文件
-func destPathWithSuffix(dir, base string) string {
+// destPathWithSuffix 返回目标路径，避免覆盖现有文件；如果无法找到可用文件名则返回错误
+func destPathWithSuffix(dir, base string) (string, error) {
 	candidate := filepath.Join(dir, base)
 	if _, err := os.Stat(candidate); os.IsNotExist(err) {
-		return candidate
+		return candidate, nil
 	}
 	
 	// 添加数字后缀
 	ext := filepath.Ext(base)
 	name := base[:len(base)-len(ext)]
 	
-	for i := 1; ; i++ {
+	const maxAttempts = 10000
+	for i := 1; i < maxAttempts; i++ {
 		candidate := filepath.Join(dir, fmt.Sprintf("%s_%d%s", name, i, ext))
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate
+		if _, err := os.Stat(candidate); err != nil {
+			if os.IsNotExist(err) {
+				return candidate, nil
+			}
+			// 其他错误（权限、I/O）：继续尝试下一个后缀
 		}
 	}
+	// 达到最大尝试次数，返回错误
+	return "", fmt.Errorf("could not find available filename after %d attempts in %s", maxAttempts, dir)
 }
 
 // selectBestFile 根据 3 级优先级（体积最大 > ModTime最早 > 字典序最小）选择保留文件
@@ -287,17 +300,20 @@ func selectBestFile(files []ImageInfo) int {
 	
 	// 优先级 2：在相同体积中比较 ModTime（最早优先）
 	// 获取文件信息用于 ModTime 比较
-	bestTime := time.Time{}
+	var bestTime time.Time
+	var bestTimeSet bool
 	bestIdx = candidates[0]
 	if fi, err := os.Stat(files[bestIdx].Path); err == nil {
 		bestTime = fi.ModTime()
+		bestTimeSet = true
 	}
 	
 	for _, idx := range candidates[1:] {
 		if fi, err := os.Stat(files[idx].Path); err == nil {
-			if fi.ModTime().Before(bestTime) {
+			if !bestTimeSet || fi.ModTime().Before(bestTime) {
 				bestIdx = idx
 				bestTime = fi.ModTime()
+				bestTimeSet = true
 			}
 		}
 	}
@@ -401,8 +417,8 @@ func handleAutoMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, tota
 			continue
 		}
 		
-		// 使用 selectBestFile 选择要保留在根目录的文件
-		bestIdx := selectBestFile(group.Files)
+		// 使用 group.Keep（与 Run() 中的计算一致）保留在根目录的文件
+		bestIdx := group.Keep
 		
 		groupName := fmt.Sprintf("group-%d", i+1)
 		groupDir := filepath.Join(dedupDir, groupName)
@@ -417,8 +433,13 @@ func handleAutoMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, tota
 							Error: fmt.Sprintf("mkdir root failed: %v", err),
 						})
 					} else {
-						dest := destPathWithSuffix(rootDedupDir, filepath.Base(f.Path))
-						if err := copyFile(f.Path, dest); err != nil {
+						dest, err := destPathWithSuffix(rootDedupDir, filepath.Base(f.Path))
+						if err != nil {
+							result.Errors = append(result.Errors, FileError{
+								Path:  f.Path,
+								Error: fmt.Sprintf("root dest path failed: %v", err),
+							})
+						} else if err := copyFile(f.Path, dest); err != nil {
 							result.Errors = append(result.Errors, FileError{
 								Path:  f.Path,
 								Error: fmt.Sprintf("copy to root failed: %v", err),
@@ -429,8 +450,15 @@ func handleAutoMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, tota
 			}
 			
 			// 所有文件都复制到 group-xxx（无论根目录操作是否成功）
-			dest := destPathWithSuffix(groupDir, filepath.Base(f.Path))
-			if !cfg.DryRun {
+dest, err := destPathWithSuffix(groupDir, filepath.Base(f.Path))
+if err != nil {
+result.Errors = append(result.Errors, FileError{
+Path:  f.Path,
+Error: fmt.Sprintf("group dest path failed: %v", err),
+})
+continue
+}
+if !cfg.DryRun {
 				if err := os.MkdirAll(groupDir, 0755); err != nil {
 					result.Errors = append(result.Errors, FileError{
 						Path:  f.Path,
