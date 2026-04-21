@@ -112,12 +112,12 @@ var supplementalRegex = regexp.MustCompile(`^(.+)\.supp[a-z]*\.json$`)
 //
 // Strategy order (safety decreasing):
 //
-//	1. Identity — try the original filename as-is
-//	2. ShortenName — truncate to 46 chars if filename+.json exceeds 51 chars
-//	3. BracketSwap — move "(N)" from before extension to after it
-//	4. RemoveExtra — remove known "edited" suffixes (15 languages)
-//	5. Supplemental — try supplemental-metadata suffixes
-//	6. NoExtension — strip the file extension entirely
+//  1. Identity — try the original filename as-is
+//  2. ShortenName — truncate to 46 chars if filename+.json exceeds 51 chars
+//  3. BracketSwap — move "(N)" from before extension to after it
+//  4. RemoveExtra — remove known "edited" suffixes (15 languages)
+//  5. Supplemental — try supplemental-metadata suffixes
+//  6. NoExtension — strip the file extension entirely
 //
 // Returns nil if no JSON sidecar is found after all 6 strategies.
 func JSONForFile(photoPath string, cache *DirCache) *JSONLookupResult {
@@ -296,8 +296,8 @@ func methodBracketSwap(filename string) string {
 //   - NFC normalize the filename (handle macOS NFD encoding differences)
 //   - Iterate extraFormats (12 language suffixes) in order
 //   - For each suffix, check if filename contains it
-//     - Contains → remove last occurrence, return immediately
-//     - Not contains → continue to next suffix
+//   - Contains → remove last occurrence, return immediately
+//   - Not contains → continue to next suffix
 //   - No suffix matches → return filename unchanged
 //
 // Uses replaceLast (not replaceAll) to avoid removing strings from the

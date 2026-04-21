@@ -14,10 +14,17 @@ import (
 	"github.com/bingzujia/google-takeout-time-helper/internal/matcher"
 	"github.com/bingzujia/google-takeout-time-helper/internal/mediatype"
 	"github.com/bingzujia/google-takeout-time-helper/internal/organizer"
-	"github.com/bingzujia/google-takeout-time-helper/internal/parser"
 	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
 	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
 )
+
+// gpsCoords holds simple GPS coordinate data from JSON sources only.
+type gpsCoords struct {
+	Lat float64
+	Lon float64
+	Alt float64
+	Has bool
+}
 
 // Stats holds processing statistics.
 type Stats struct {
@@ -189,7 +196,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 
 	// Step 3b: Extract JSON timestamps and GPS
 	jsonTimestamp := time.Time{}
-	var jsonGPS parser.GPSInfo
+	var jsonGPS gpsCoords
 	jsonGPSOk := false
 	fileModifyTs := int64(0)
 	modifyTsSource := ""
@@ -200,7 +207,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 			jsonTimestamp = jsonResult.Timestamp
 		}
 		if jsonResult.Lat != 0 || jsonResult.Lon != 0 {
-			jsonGPS = parser.GPSInfo{
+			jsonGPS = gpsCoords{
 				Lat: jsonResult.Lat,
 				Lon: jsonResult.Lon,
 				Alt: jsonResult.Alt,
@@ -216,10 +223,6 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 		shouldMoveModifyTs = true
 	}
 
-	// Step 3c: Extract EXIF GPS to determine if JSON GPS supplement is needed
-	exifGPS := parser.GPSInfo{} // EXIF parsing removed
-	exifGPSOk := exifGPS.Has
-
 	// Check if we should move to manual_review due to missing timestamps
 	if shouldMoveModifyTs {
 		statsMu.Lock()
@@ -227,7 +230,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 		statsMu.Unlock()
 		logger.Info("missing_timestamps", entry.RelPath)
 		moveToManualReview(entry, outputDir, manualReviewDir, jsonResult, jsonTimestamp,
-			exifGPS, exifGPSOk, jsonGPS, jsonGPSOk, deviceFolder, deviceType, "missing_timestamps")
+			jsonGPS, jsonGPSOk, deviceFolder, deviceType, "missing_timestamps")
 		return
 	}
 
@@ -258,13 +261,18 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 			statsMu.Unlock()
 			logger.Fail("timestamp_write", entry.RelPath, err.Error())
 			moveToManualReviewByPath(dstPath, entry.RelPath, outputDir, manualReviewDir, jsonResult, jsonTimestamp,
-				exifGPS, exifGPSOk, jsonGPS, jsonGPSOk, deviceFolder, deviceType, "timestamp_error")
+				jsonGPS, jsonGPSOk, deviceFolder, deviceType, "timestamp_error")
 			return
 		}
 	}
 
 	// Step 3g: Write metadata JSON
-	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
+	finalGPS := jsonGPS
+	gpsSource := "json"
+	if !jsonGPSOk {
+		finalGPS = gpsCoords{}
+		gpsSource = "none"
+	}
 	meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "", modifyTsSource, modifyTsSource)
 	meta.SHA256 = copySHA256
 	if err := writeMetadata(metadataDir, meta); err != nil {
@@ -281,8 +289,8 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	statsMu.Unlock()
 }
 
-// handleTypeMismatch detects the actual file type and temporarily renames for exiftool.
-// Returns the temporary path for exiftool, a cleanup function to restore the original name,
+// handleTypeMismatch detects the actual file type and temporarily renames if needed.
+// Returns the temporary path (or original if no rename needed), a cleanup function,
 // or an error if the file should be moved to the error directory.
 func handleTypeMismatch(dstPath string, entry FileEntry, outputDir string,
 	jsonResult *matcher.JSONLookupResult, logger *logutil.Logger, stats *Stats, statsMu *sync.Mutex) (string, func() error, error) {
@@ -400,17 +408,6 @@ func moveToErrorByPath(srcPath, relPath, outputDir string, jsonResult *matcher.J
 	}
 }
 
-// resolveGPS picks the best GPS source: EXIF first, JSON second.
-func resolveGPS(exifGPS parser.GPSInfo, exifGPSOk bool, jsonGPS parser.GPSInfo, jsonGPSOk bool) (parser.GPSInfo, string) {
-	if exifGPSOk {
-		return exifGPS, "exif"
-	}
-	if jsonGPSOk {
-		return jsonGPS, "json"
-	}
-	return parser.GPSInfo{}, "none"
-}
-
 // resolvePhotoTimestamp returns the Unix timestamp for file ModifyTime from JSON.
 // Priority: photoTakenTime → 0 (no fallback)
 // Returns (timestamp, source, shouldMoveToManualReview)
@@ -473,8 +470,7 @@ func applyFileTimestamp(filePath string, modifyTimestamp int64) error {
 func moveToManualReview(entry FileEntry, outputDir, manualReviewDir string,
 	jsonResult *matcher.JSONLookupResult,
 	jsonTimestamp time.Time,
-	exifGPS parser.GPSInfo, exifGPSOk bool,
-	jsonGPS parser.GPSInfo, jsonGPSOk bool,
+	jsonGPS gpsCoords, jsonGPSOk bool,
 	deviceFolder, deviceType, reviewReason string) {
 
 	// Copy file to manual_review
@@ -496,7 +492,12 @@ func moveToManualReview(entry FileEntry, outputDir, manualReviewDir string,
 
 	// Write metadata JSON to manual_review/metadata/
 	manualMetaDir := filepath.Join(manualReviewDir, "metadata")
-	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
+	finalGPS := jsonGPS
+	gpsSource := "json"
+	if !jsonGPSOk {
+		finalGPS = gpsCoords{}
+		gpsSource = "none"
+	}
 	meta := buildMetadata(entry.RelPath, filepath.Base(entry.Path), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason, "manual_review", "manual_review")
 	sha256, err := hashFile(dstReview)
 	if err == nil {
@@ -510,8 +511,7 @@ func moveToManualReview(entry FileEntry, outputDir, manualReviewDir string,
 func moveToManualReviewByPath(srcPath, relPath, outputDir, manualReviewDir string,
 	jsonResult *matcher.JSONLookupResult,
 	jsonTimestamp time.Time,
-	exifGPS parser.GPSInfo, exifGPSOk bool,
-	jsonGPS parser.GPSInfo, jsonGPSOk bool,
+	jsonGPS gpsCoords, jsonGPSOk bool,
 	deviceFolder, deviceType, reviewReason string) {
 
 	// Move file from output to manual_review
@@ -537,7 +537,12 @@ func moveToManualReviewByPath(srcPath, relPath, outputDir, manualReviewDir strin
 
 	// Write metadata JSON to manual_review/metadata/
 	manualMetaDir := filepath.Join(manualReviewDir, "metadata")
-	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
+	finalGPS := jsonGPS
+	gpsSource := "json"
+	if !jsonGPSOk {
+		finalGPS = gpsCoords{}
+		gpsSource = "none"
+	}
 	meta := buildMetadata(relPath, filepath.Base(srcPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason, "manual_review", "manual_review")
 	sha256, err := hashFile(dstReview)
 	if err == nil {
@@ -549,7 +554,7 @@ func moveToManualReviewByPath(srcPath, relPath, outputDir, manualReviewDir strin
 // buildMetadata constructs a Metadata struct from JSON sidecar data.
 func buildMetadata(relPath, outputFilename string,
 	jsonTimestamp time.Time,
-	finalGPS parser.GPSInfo, gpsSource string,
+	finalGPS gpsCoords, gpsSource string,
 	deviceFolder, deviceType, reviewReason string,
 	createDateSource, fileModifyDateSource string) *Metadata {
 
@@ -592,12 +597,6 @@ func buildMetadata(relPath, outputFilename string,
 	return meta
 }
 
-// isUnsupportedFormatError checks if the exiftool error is due to an unsupported file format.
-func isUnsupportedFormatError(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "not yet supported") || strings.Contains(msg, "Writing of")
-}
-
 func checkOutputDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -625,7 +624,7 @@ func checkOutputDir(dir string) error {
 }
 
 // runDry executes the migration pipeline in dry-run mode.
-// No files are copied, no EXIF is written, no directories are created.
+// No files are copied, no directories are created.
 func runDry(cfg Config) (*Stats, error) {
 	// Classify folders
 	yearFolders, _, err := organizer.ClassifyFolder(cfg.InputDir)
@@ -680,7 +679,7 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 	// Extract JSON timestamp and GPS
 	jsonTimestamp := time.Time{}
 	jsonTimeOk := false
-	var jsonGPS parser.GPSInfo
+	var jsonGPS gpsCoords
 	jsonGPSOk := false
 	if jsonResult != nil {
 		if !jsonResult.Timestamp.IsZero() {
@@ -688,7 +687,7 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 			jsonTimeOk = true
 		}
 		if jsonResult.Lat != 0 || jsonResult.Lon != 0 {
-			jsonGPS = parser.GPSInfo{
+			jsonGPS = gpsCoords{
 				Lat: jsonResult.Lat,
 				Lon: jsonResult.Lon,
 				Has: true,
@@ -697,14 +696,15 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 		}
 	}
 
-	// Extract EXIF GPS
-	exifGPS := parser.GPSInfo{} // EXIF parsing removed
-	exifGPSOk := exifGPS.Has
-
-	willWriteExif := jsonTimeOk || (!exifGPSOk && jsonGPSOk)
+	hasMetadata := jsonTimeOk || jsonGPSOk
 
 	// Determine final GPS for display
-	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
+	finalGPS := jsonGPS
+	gpsSource := "json"
+	if !jsonGPSOk {
+		finalGPS = gpsCoords{}
+		gpsSource = "none"
+	}
 
 	// Format output strings
 	jsonTimeStr := "none"
@@ -718,10 +718,10 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 		gpsStr = fmt.Sprintf("yes (%s)", gpsSource)
 	}
 
-	// Check if format is supported (only relevant when we'd write)
+	// Check if format is supported (only relevant when we have metadata to write)
 	reviewReason := ""
-	if willWriteExif && !isWriteSupported(entry.Path) {
-		reviewReason = "exif_unsupported"
+	if hasMetadata && !isWriteSupported(entry.Path) {
+		reviewReason = "unsupported_format"
 	}
 
 	// Print status

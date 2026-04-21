@@ -36,19 +36,11 @@ type TSInfo struct {
 	JSON     string `json:"json,omitempty"`
 }
 
-// GPSInfo holds GPS data from all sources.
+// GPSInfo holds GPS data from JSON sources only.
 type GPSInfo struct {
-	Lat    float64   `json:"lat"`
-	Lon    float64   `json:"lon"`
-	Source string    `json:"source"`
-	EXIF   *GPSPoint `json:"exif,omitempty"`
-	JSON   *GPSPoint `json:"json,omitempty"`
-}
-
-// GPSPoint holds a single GPS coordinate.
-type GPSPoint struct {
-	Lat float64 `json:"lat"`
-	Lon float64 `json:"lon"`
+	Lat    float64 `json:"lat"`
+	Lon    float64 `json:"lon"`
+	Source string  `json:"source"`
 }
 
 // writeMetadata writes a metadata JSON file to metadataDir/<sha256>.json.

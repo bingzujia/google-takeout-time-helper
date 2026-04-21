@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/bingzujia/google-takeout-time-helper/internal/matcher"
-	"github.com/bingzujia/google-takeout-time-helper/internal/parser"
 )
 
 // TestMoveToManualReview_SHA256Assignment_Success tests SHA256 calculation success in moveToManualReview
@@ -44,8 +43,7 @@ func TestMoveToManualReview_SHA256Assignment_Success(t *testing.T) {
 	moveToManualReview(
 		entry, outputDir, manualReviewDir,
 		nil, time.Time{},
-		parser.GPSInfo{}, false,
-		parser.GPSInfo{}, false,
+		gpsCoords{}, false,
 		"camera", "phone", "test_reason",
 	)
 
@@ -99,8 +97,7 @@ func TestMoveToManualReview_SHA256Assignment_Error(t *testing.T) {
 	moveToManualReview(
 		entry, outputDir, manualReviewDir,
 		nil, time.Time{},
-		parser.GPSInfo{}, false,
-		parser.GPSInfo{}, false,
+		gpsCoords{}, false,
 		"camera", "phone", "no_json_sidecar",
 	)
 
@@ -142,8 +139,7 @@ func TestMoveToManualReviewByPath_SHA256Assignment_Success(t *testing.T) {
 	moveToManualReviewByPath(
 		srcPath, "test.jpg", outputDir, manualReviewDir,
 		nil, time.Time{},
-		parser.GPSInfo{}, false,
-		parser.GPSInfo{}, false,
+		gpsCoords{}, false,
 		"camera", "phone", "metadata_mismatch",
 	)
 
@@ -190,8 +186,7 @@ func TestMoveToManualReviewByPath_SHA256Assignment_Error(t *testing.T) {
 	moveToManualReviewByPath(
 		srcPath, "nonexistent.jpg", outputDir, manualReviewDir,
 		nil, time.Time{},
-		parser.GPSInfo{}, false,
-		parser.GPSInfo{}, false,
+		gpsCoords{}, false,
 		"camera", "phone", "missing_metadata",
 	)
 
