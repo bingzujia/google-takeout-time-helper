@@ -10,7 +10,7 @@ var yearFolderRegex = regexp.MustCompile(`^Photos from (20|19|18)\d{2}$`)
 
 // FolderClass holds the classification result for a directory.
 type FolderClass struct {
-	IsYearFolder bool
+	IsYearFolder  bool
 	IsAlbumFolder bool
 }
 

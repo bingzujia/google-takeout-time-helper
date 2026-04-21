@@ -139,9 +139,9 @@ func TestIsUnixTimestampFormat(t *testing.T) {
 			}
 
 			// Now check if it's recognized as Unix format
-			got := IsUnixTimestampFormat(ts)
+			got := isUnixTimestampFormat(ts)
 			if got != tc.wantTrue {
-				t.Errorf("IsUnixTimestampFormat(%v) = %v, want %v", ts, got, tc.wantTrue)
+				t.Errorf("isUnixTimestampFormat(%v) = %v, want %v", ts, got, tc.wantTrue)
 			}
 		})
 	}

@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 )
 
-// CopyAndHash copies src to dst (flat, in destDir) while computing SHA-256.
+// copyAndHash copies src to dst (flat, in destDir) while computing SHA-256.
 // Returns the destination path, SHA-256 hex string, and whether the file already existed.
 // This is a single-pass operation: the file is read once and both written and hashed.
-func CopyAndHash(src, destDir string) (dstPath, sha256Hex string, exists bool, err error) {
+func copyAndHash(src, destDir string) (dstPath, sha256Hex string, exists bool, err error) {
 	name := filepath.Base(src)
 	dstPath = filepath.Join(destDir, name)
 
@@ -50,8 +50,8 @@ func CopyAndHash(src, destDir string) (dstPath, sha256Hex string, exists bool, e
 	return dstPath, sha256Hex, false, nil
 }
 
-// HashFile computes the SHA-256 hex digest of the file at path.
-func HashFile(path string) (string, error) {
+// hashFile computes the SHA-256 hex digest of the file at path.
+func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open: %w", err)

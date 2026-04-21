@@ -18,9 +18,9 @@ type FileType struct {
 var fileTypeCacheMu sync.Mutex
 var fileTypeCache = make(map[string]*FileType)
 
-// DetectFileAll runs the `file` command once and returns type info.
+// detectFileAll runs the `file` command once and returns type info.
 // Results are cached per file path to avoid redundant calls.
-func DetectFileAll(filePath string) (*FileType, error) {
+func detectFileAll(filePath string) (*FileType, error) {
 	fileTypeCacheMu.Lock()
 	if cached, ok := fileTypeCache[filePath]; ok {
 		fileTypeCacheMu.Unlock()
@@ -58,19 +58,19 @@ func DetectFileAll(filePath string) (*FileType, error) {
 	return result, nil
 }
 
-// DetectFileType returns the correct extension if the actual file type
+// detectFileType returns the correct extension if the actual file type
 // doesn't match the current extension. Returns empty string if no rename is needed.
-func DetectFileType(filePath string) (newExt string, err error) {
-	ft, err := DetectFileAll(filePath)
+func detectFileType(filePath string) (newExt string, err error) {
+	ft, err := detectFileAll(filePath)
 	if err != nil {
 		return "", err
 	}
 	return ft.NewExt, nil
 }
 
-// IsWriteSupported checks if exiftool can write to the given file type.
-func IsWriteSupported(filePath string) bool {
-	ft, err := DetectFileAll(filePath)
+// isWriteSupported checks if exiftool can write to the given file type.
+func isWriteSupported(filePath string) bool {
+	ft, err := detectFileAll(filePath)
 	if err != nil {
 		return true // assume supported if we can't detect
 	}

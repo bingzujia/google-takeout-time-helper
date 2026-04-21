@@ -21,20 +21,20 @@ import (
 
 // Stats holds processing statistics.
 type Stats struct {
-	Scanned      int
-	Processed    int
+	Scanned       int
+	Processed     int
 	SkippedExists int
-	FailedExif   int
-	FailedOther  int
-	ManualReview int // files that couldn't have EXIF written but are otherwise valid
+	FailedExif    int
+	FailedOther   int
+	ManualReview  int // files that couldn't have EXIF written but are otherwise valid
 }
 
 // Config holds migration settings.
 type Config struct {
 	InputDir     string
 	OutputDir    string
-	ShowProgress bool // whether to display progress bar
-	DryRun       bool // preview only — no file operations
+	ShowProgress bool            // whether to display progress bar
+	DryRun       bool            // preview only — no file operations
 	Logger       *logutil.Logger // structured log; if nil a Nop logger is used
 }
 
@@ -210,7 +210,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 			jsonGPSOk = true
 		}
 		// Resolve ModifyTime timestamp (unified priority: photoTakenTime → creationTime → manual_review)
-		fileModifyTs, modifyTsSource, shouldMoveModifyTs = ResolveModifyTimestamp(jsonResult)
+		fileModifyTs, modifyTsSource, shouldMoveModifyTs = resolveModifyTimestamp(jsonResult)
 	} else {
 		// No JSON sidecar — requires manual review
 		modifyTsSource = "manual_review"
@@ -233,7 +233,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	}
 
 	// Step 3e: Copy file to output; SHA-256 computed at copy time.
-	dstPath, copySHA256, exists, err := CopyAndHash(entry.Path, destDir)
+	dstPath, copySHA256, exists, err := copyAndHash(entry.Path, destDir)
 	if err != nil {
 		statsMu.Lock()
 		stats.FailedOther++
@@ -268,7 +268,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
 	meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "", modifyTsSource, modifyTsSource)
 	meta.SHA256 = copySHA256
-	if err := WriteMetadata(metadataDir, meta); err != nil {
+	if err := writeMetadata(metadataDir, meta); err != nil {
 		statsMu.Lock()
 		stats.FailedOther++
 		statsMu.Unlock()
@@ -290,7 +290,7 @@ func handleTypeMismatch(dstPath string, entry FileEntry, outputDir string,
 
 	noOp := func() error { return nil }
 
-	newExt, err := DetectFileType(dstPath)
+	newExt, err := detectFileType(dstPath)
 	if err != nil {
 		// Can't detect type, continue anyway
 		return dstPath, noOp, nil
@@ -412,12 +412,12 @@ func resolveGPS(exifGPS parser.GPSInfo, exifGPSOk bool, jsonGPS parser.GPSInfo, 
 	return parser.GPSInfo{}, "none"
 }
 
-// ResolvePhotoTimestamp returns the Unix timestamp for file ModifyTime from JSON.
+// resolvePhotoTimestamp returns the Unix timestamp for file ModifyTime from JSON.
 // Priority: photoTakenTime → 0 (no fallback)
 // Returns (timestamp, source, shouldMoveToManualReview)
 // Updated: Both CreateDate and FileModifyDate now use photoTakenTime priorityuniformly,
-// with separate fallback logic in ResolveModifyTimestamp()
-func ResolvePhotoTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string, bool) {
+// with separate fallback logic in resolveModifyTimestamp()
+func resolvePhotoTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string, bool) {
 	if jsonResult == nil {
 		return 0, "manual_review", true
 	}
@@ -427,11 +427,11 @@ func ResolvePhotoTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string,
 	return 0, "manual_review", true
 }
 
-// ResolveModifyTimestamp returns the Unix timestamp for file ModifyTime from JSON.
+// resolveModifyTimestamp returns the Unix timestamp for file ModifyTime from JSON.
 // Priority: photoTakenTime (優先) → creationTime (fallback) → 0 (manual_review)
 // Returns (timestamp, source, shouldMoveToManualReview)
 // Updated behavior: photoTakenTime is now the primary source for ModifyTime (not just fallback)
-func ResolveModifyTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string, bool) {
+func resolveModifyTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string, bool) {
 	if jsonResult == nil {
 		return 0, "manual_review", true
 	}
@@ -499,11 +499,11 @@ func moveToManualReview(entry FileEntry, outputDir, manualReviewDir string,
 	manualMetaDir := filepath.Join(manualReviewDir, "metadata")
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
 	meta := buildMetadata(entry.RelPath, filepath.Base(entry.Path), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason, "manual_review", "manual_review")
-	sha256, err := HashFile(dstReview)
+	sha256, err := hashFile(dstReview)
 	if err == nil {
 		meta.SHA256 = sha256
 	}
-	WriteMetadata(manualMetaDir, meta)
+	writeMetadata(manualMetaDir, meta)
 }
 
 // moveToManualReviewByPath moves an already-copied file from outputDir to manual_review
@@ -540,11 +540,11 @@ func moveToManualReviewByPath(srcPath, relPath, outputDir, manualReviewDir strin
 	manualMetaDir := filepath.Join(manualReviewDir, "metadata")
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
 	meta := buildMetadata(relPath, filepath.Base(srcPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason, "manual_review", "manual_review")
-	sha256, err := HashFile(dstReview)
+	sha256, err := hashFile(dstReview)
 	if err == nil {
 		meta.SHA256 = sha256
 	}
-	WriteMetadata(manualMetaDir, meta)
+	writeMetadata(manualMetaDir, meta)
 }
 
 // buildMetadata constructs a Metadata struct from JSON sidecar data.
@@ -721,7 +721,7 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 
 	// Check if format is supported (only relevant when we'd write)
 	reviewReason := ""
-	if willWriteExif && !IsWriteSupported(entry.Path) {
+	if willWriteExif && !isWriteSupported(entry.Path) {
 		reviewReason = "exif_unsupported"
 	}
 

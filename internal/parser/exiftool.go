@@ -36,9 +36,9 @@ type EXIFInfo struct {
 	GPSOk       bool
 }
 
-// ParseEXIFAll extracts both DateTimeOriginal and GPS coordinates in a single exiftool call.
+// parseEXIFAll extracts both DateTimeOriginal and GPS coordinates in a single exiftool call.
 // This is more efficient than calling ParseEXIFTimestamp and ParseEXIFGPS separately.
-func ParseEXIFAll(filePath string) (*EXIFInfo, error) {
+func parseEXIFAll(filePath string) (*EXIFInfo, error) {
 	fields, err := readEXIFFields(filePath)
 	if err != nil {
 		return nil, err

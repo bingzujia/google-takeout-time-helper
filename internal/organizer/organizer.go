@@ -60,4 +60,3 @@ func matches(name string, mode Mode) bool {
 	}
 	return false
 }
-

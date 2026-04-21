@@ -10,16 +10,16 @@ import (
 
 // Metadata holds all information to write into a metadata JSON file.
 type Metadata struct {
-	OriginalPath   string     `json:"original_path"`
-	OutputFilename string     `json:"output_filename"`
-	SHA256         string     `json:"sha256"`
-	Timestamp      TSInfo     `json:"timestamp"`
-	GPS            *GPSInfo   `json:"gps,omitempty"`
-	DeviceFolder   string     `json:"device_folder,omitempty"`
-	DeviceType     string     `json:"device_type,omitempty"`
-	CreateDate     *TSSource  `json:"create_date,omitempty"`     // track CreateDate source separately
-	FileModifyDate *TSSource  `json:"file_modify_date,omitempty"` // track FileModifyDate source separately
-	ReviewReason   string     `json:"review_reason,omitempty"` // set when file needs manual attention
+	OriginalPath   string    `json:"original_path"`
+	OutputFilename string    `json:"output_filename"`
+	SHA256         string    `json:"sha256"`
+	Timestamp      TSInfo    `json:"timestamp"`
+	GPS            *GPSInfo  `json:"gps,omitempty"`
+	DeviceFolder   string    `json:"device_folder,omitempty"`
+	DeviceType     string    `json:"device_type,omitempty"`
+	CreateDate     *TSSource `json:"create_date,omitempty"`      // track CreateDate source separately
+	FileModifyDate *TSSource `json:"file_modify_date,omitempty"` // track FileModifyDate source separately
+	ReviewReason   string    `json:"review_reason,omitempty"`    // set when file needs manual attention
 }
 
 // TSSource tracks which JSON field was used as source for an EXIF timestamp
@@ -51,8 +51,8 @@ type GPSPoint struct {
 	Lon float64 `json:"lon"`
 }
 
-// WriteMetadata writes a metadata JSON file to metadataDir/<sha256>.json.
-func WriteMetadata(metadataDir string, m *Metadata) error {
+// writeMetadata writes a metadata JSON file to metadataDir/<sha256>.json.
+func writeMetadata(metadataDir string, m *Metadata) error {
 	if err := os.MkdirAll(metadataDir, 0755); err != nil {
 		return fmt.Errorf("create metadata dir: %w", err)
 	}

@@ -25,8 +25,8 @@ takeout-helper-log/migrate-{date}-{index}.log with per-file decisions.`,
 }
 
 var (
-	migrateDryRun   bool
-	migrateInputDir string
+	migrateDryRun    bool
+	migrateInputDir  string
 	migrateOutputDir string
 )
 

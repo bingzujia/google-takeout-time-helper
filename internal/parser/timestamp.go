@@ -18,7 +18,7 @@ type pattern struct {
 var loc = time.UTC
 
 // lastMatchedPattern tracks which pattern was matched for the current ParseFilenameTimestamp call.
-// This is used by IsUnixTimestampFormat to determine the timestamp type.
+// This is used by isUnixTimestampFormat to determine the timestamp type.
 var lastMatchedPattern *pattern
 
 var patterns = []pattern{
@@ -118,7 +118,7 @@ var patterns = []pattern{
 }
 
 // ParseFilenameTimestamp returns the time embedded in the filename, or zero time if none found.
-// It also updates lastMatchedPattern to track which pattern was matched (used by IsUnixTimestampFormat).
+// It also updates lastMatchedPattern to track which pattern was matched (used by isUnixTimestampFormat).
 func ParseFilenameTimestamp(filename string) (time.Time, bool) {
 	base := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
 	for i := range patterns {
@@ -133,10 +133,10 @@ func ParseFilenameTimestamp(filename string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// IsUnixTimestampFormat returns true if the most recently parsed filename timestamp
+// isUnixTimestampFormat returns true if the most recently parsed filename timestamp
 // came from a Unix timestamp format (Pattern 9/13: mmexport or album_temp).
 // Must be called immediately after ParseFilenameTimestamp to get accurate results.
-func IsUnixTimestampFormat(t time.Time) bool {
+func isUnixTimestampFormat(t time.Time) bool {
 	if lastMatchedPattern == nil {
 		return false
 	}

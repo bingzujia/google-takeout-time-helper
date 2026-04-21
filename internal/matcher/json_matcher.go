@@ -63,9 +63,9 @@ type GooglePhoto struct {
 		Longitude float64 `json:"longitude"`
 		Altitude  float64 `json:"altitude"`
 	} `json:"geoData"`
-	CameraMake           string `json:"cameraMake"`
-	CameraModel          string `json:"cameraModel"`
-	GooglePhotosOrigin   struct {
+	CameraMake         string `json:"cameraMake"`
+	CameraModel        string `json:"cameraModel"`
+	GooglePhotosOrigin struct {
 		MobileUpload struct {
 			DeviceFolder struct {
 				LocalFolderName string `json:"localFolderName"`
@@ -77,30 +77,30 @@ type GooglePhoto struct {
 
 // JSONLookupResult holds the result of looking up a JSON sidecar for a photo.
 type JSONLookupResult struct {
-	JSONFile            string    // path to the matched JSON file
-	Timestamp           time.Time // extracted photo taken time (zero if parsing failed)
-	PhotoTakenTimeUnix  int64     // Unix timestamp of photoTakenTime (0 if not present)
-	CreationTimeUnix    int64     // Unix timestamp of creationTime (0 if not present)
-	Lat                 float64   // latitude from geoData
-	Lon                 float64   // longitude from geoData
-	Alt                 float64   // altitude from geoData
-	CameraMake          string    // device manufacturer
-	CameraModel         string    // device model
-	DeviceFolder        string    // device folder name from googlePhotosOrigin.mobileUpload.deviceFolder
-	LocalFolderName     string    // local folder name from googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName
-	DeviceType          string    // device type from googlePhotosOrigin.mobileUpload
-	GooglePhoto         *GooglePhoto // raw parsed JSON (for ResolveGPS caller access)
+	JSONFile           string       // path to the matched JSON file
+	Timestamp          time.Time    // extracted photo taken time (zero if parsing failed)
+	PhotoTakenTimeUnix int64        // Unix timestamp of photoTakenTime (0 if not present)
+	CreationTimeUnix   int64        // Unix timestamp of creationTime (0 if not present)
+	Lat                float64      // latitude from geoData
+	Lon                float64      // longitude from geoData
+	Alt                float64      // altitude from geoData
+	CameraMake         string       // device manufacturer
+	CameraModel        string       // device model
+	DeviceFolder       string       // device folder name from googlePhotosOrigin.mobileUpload.deviceFolder
+	LocalFolderName    string       // local folder name from googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName
+	DeviceType         string       // device type from googlePhotosOrigin.mobileUpload
+	GooglePhoto        *GooglePhoto // raw parsed JSON (for ResolveGPS caller access)
 }
 
 // supplementalSuffixes lists known supplemental-metadata suffixes that Google
 // Takeout appends to JSON sidecar filenames. The JSON file is named as
 // "photo.ext.<suffix>.json" while the photo is "photo.ext".
 var supplementalSuffixes = []string{
-	"supplemental-met",   // truncated form (51-char limit)
+	"supplemental-met", // truncated form (51-char limit)
 	"supplemental-metadata",
-	"supplemen",          // further truncated form
-	"supp",               // shorter truncation
-	"s",                  // shortest truncation
+	"supplemen", // further truncated form
+	"supp",      // shorter truncation
+	"s",         // shortest truncation
 }
 
 // supplementalRegex matches any "photo.ext.<suffix>.json" pattern where
@@ -380,7 +380,7 @@ func parseJSONLookup(jsonPath string) *JSONLookupResult {
 //  2. Parse timestamp from photo filename (via parser.ParseFilenameTimestamp)
 //  3. Parse timestamp from JSON photoTakenTime.timestamp field
 //  4. Return zero time if all fail
-func ResolveTimestamp(photoPath string, gp *GooglePhoto) time.Time {
+func resolveTimestamp(photoPath string, gp *GooglePhoto) time.Time {
 	// Priority 1: EXIF DateTimeOriginal
 	if t, ok := parser.ParseEXIFTimestamp(photoPath); ok {
 		return t
@@ -407,7 +407,7 @@ func ResolveTimestamp(photoPath string, gp *GooglePhoto) time.Time {
 //  1. EXIF GPS tags (via exiftool)
 //  2. JSON geoData.latitude/longitude/altitude fields
 //  3. Return zero GPSInfo if both fail
-func ResolveGPS(photoPath string, gp *GooglePhoto) parser.GPSInfo {
+func resolveGPS(photoPath string, gp *GooglePhoto) parser.GPSInfo {
 	// Priority 1: EXIF GPS
 	if info := parser.ParseEXIFGPS(photoPath); info.Has {
 		return info
@@ -416,16 +416,17 @@ func ResolveGPS(photoPath string, gp *GooglePhoto) parser.GPSInfo {
 	// Priority 2: JSON geoData
 	if gp.GeoData.Latitude != 0 || gp.GeoData.Longitude != 0 {
 		return parser.GPSInfo{
-			Lat:  gp.GeoData.Latitude,
-			Lon:  gp.GeoData.Longitude,
-			Alt:  gp.GeoData.Altitude,
-			Has:  true,
+			Lat: gp.GeoData.Latitude,
+			Lon: gp.GeoData.Longitude,
+			Alt: gp.GeoData.Altitude,
+			Has: true,
 		}
 	}
 
 	// Priority 3: no GPS
 	return parser.GPSInfo{}
 }
+
 // If old is not found, returns s unchanged.
 func replaceLast(s, old, new string) string {
 	i := strings.LastIndex(s, old)

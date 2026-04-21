@@ -100,9 +100,9 @@ func TestParseEXIFAll(t *testing.T) {
 		}, nil
 	})
 
-	info, err := ParseEXIFAll("combined.jpg")
+	info, err := parseEXIFAll("combined.jpg")
 	if err != nil {
-		t.Fatalf("ParseEXIFAll returned error: %v", err)
+		t.Fatalf("parseEXIFAll returned error: %v", err)
 	}
 	if !info.TimestampOk || !info.GPSOk {
 		t.Fatalf("expected timestamp and GPS to be present: %#v", info)
@@ -122,9 +122,9 @@ func TestParseEXIFAll_SubsetsAndErrors(t *testing.T) {
 			}, nil
 		})
 
-		info, err := ParseEXIFAll("timestamp.jpg")
+		info, err := parseEXIFAll("timestamp.jpg")
 		if err != nil {
-			t.Fatalf("ParseEXIFAll returned error: %v", err)
+			t.Fatalf("parseEXIFAll returned error: %v", err)
 		}
 		if !info.TimestampOk || info.GPSOk {
 			t.Fatalf("unexpected subset result: %#v", info)
@@ -138,8 +138,8 @@ func TestParseEXIFAll_SubsetsAndErrors(t *testing.T) {
 			}, nil
 		})
 
-		if _, err := ParseEXIFAll("fail.jpg"); err == nil {
-			t.Fatal("expected ParseEXIFAll to return error")
+		if _, err := parseEXIFAll("fail.jpg"); err == nil {
+			t.Fatal("expected parseEXIFAll to return error")
 		}
 	})
 }

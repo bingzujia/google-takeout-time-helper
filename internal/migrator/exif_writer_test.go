@@ -27,15 +27,15 @@ func TestWriteSeparateTimestamps(t *testing.T) {
 	}{
 		{
 			name:           "both timestamps provided",
-			photoTakenTs:   1683012040,  // 2023-05-02 10:20:40 UTC
-			fileModifyTs:   1683015000,  // 2023-05-02 11:10:00 UTC
+			photoTakenTs:   1683012040, // 2023-05-02 10:20:40 UTC
+			fileModifyTs:   1683015000, // 2023-05-02 11:10:00 UTC
 			expectCreateOk: true,
 			expectModifyOk: true,
 		},
 		{
 			name:           "only photoTakenTs provided (fallback)",
-			photoTakenTs:   1683012040,  // 2023-05-02 10:20:40 UTC
-			fileModifyTs:   0,           // Should fallback to photoTakenTs
+			photoTakenTs:   1683012040, // 2023-05-02 10:20:40 UTC
+			fileModifyTs:   0,          // Should fallback to photoTakenTs
 			expectCreateOk: true,
 			expectModifyOk: true,
 		},
@@ -98,10 +98,10 @@ func TestWriteSeparateTimestampsTimezoneConversion(t *testing.T) {
 	t.Run("unix_to_time_conversion", func(t *testing.T) {
 		// Verify that time.Unix converts UTC to local timezone
 		tm := time.Unix(utcTimestamp, 0)
-		
+
 		// The time.Unix creates a UTC time, then Format uses local timezone
 		formatted := tm.Format("2006:01:02 15:04:05")
-		
+
 		// Just verify it formats without error; the actual timezone depends on system
 		if len(formatted) == 0 {
 			t.Error("formatted timestamp is empty")
