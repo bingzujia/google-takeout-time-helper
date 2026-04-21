@@ -8,7 +8,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var renameInputDir string
+var (
+	renameInputDir string
+	renameDryRun   bool
+)
 
 var renameCmd = &cobra.Command{
 	Use:   "rename",
@@ -20,35 +23,37 @@ var renameCmd = &cobra.Command{
   独立视频:       VID{YYYYMMDD}{HHMMSS}.{ext}
   连拍（Burst）:  IMG{YYYYMMDD}{HHMMSS}_BURST{NNN}.{ext}（HEIC）
                   IMG_{YYYYMMDD}_{HHMMSS}_BURST{NNN}.{ext}（其他）
+  截图:          Screenshot_{YYYY-MM-DD-HH-MM-SS-MS}.{ext}
 
 连拍检测：文件名匹配 YYYYMMDD_HHMMSS_NNN.ext 且同前缀 ≥2 个文件时触发。
+截图检测：文件名以 "screenshot"（不区分大小写）开头的图片文件。
 MP4 伴侣：与图片同名的 .mp4 文件随图片一起重命名。
 冲突处理：目标名已存在时自动追加 _001、_002 后缀。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dryRun, _ := cmd.Flags().GetBool("dry-run")
-
-		logger, err := logutil.OpenLog(renameInputDir, "rename", dryRun)
-		if err != nil {
-			return fmt.Errorf("open log: %w", err)
-		}
-		defer logger.Close()
-
-		cfg := renamer.Config{Dir: renameInputDir, DryRun: dryRun, Logger: logger}
-		result, err := renamer.Run(cfg)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Renamed: %d, Skipped: %d, Errors: %d\n", result.Renamed, result.Skipped, result.Errors)
-		if !dryRun {
-			fmt.Printf("Log: %s\n", logger.Path())
-		}
-		return nil
+		return runRename()
 	},
+}
+
+func runRename() error {
+	logger, err := logutil.OpenLog(renameInputDir, "rename", renameDryRun)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
+	}
+	defer logger.Close()
+
+	cfg := renamer.Config{Dir: renameInputDir, DryRun: renameDryRun, Logger: logger}
+	result, err := renamer.Run(cfg)
+	if err != nil {
+		return err
+	}
+	printStats(result.Renamed, result.Skipped, result.Errors)
+	printLogPath(renameDryRun, logger)
+	return nil
 }
 
 func init() {
 	rootCmd.AddCommand(renameCmd)
 	renameCmd.Flags().StringVar(&renameInputDir, "input-dir", "", "目标目录")
-	renameCmd.Flags().Bool("dry-run", false, "仅预览重命名，不实际修改")
+	renameCmd.Flags().BoolVar(&renameDryRun, "dry-run", false, "仅预览重命名，不实际修改")
 	_ = renameCmd.MarkFlagRequired("input-dir")
 }

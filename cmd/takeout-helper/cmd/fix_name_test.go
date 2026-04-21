@@ -160,3 +160,136 @@ func TestRunFixNameFiles_PrepareFileError_Skips(t *testing.T) {
 		t.Fatalf("skipLogs = %v", skipLogs)
 	}
 }
+
+// TestFixName_mmexport_TimezoneConversion tests that mmexport filenames
+// (Unix timestamp format) are converted from UTC to local timezone.
+func TestFixName_mmexport_TimezoneConversion(t *testing.T) {
+	// mmexport1491013330299 → 1491013330 seconds → 2017-04-01 09:15:30 UTC
+	// When converted to local timezone, it should reflect the local time
+	var writtenTime time.Time
+	processed, failed, skipped := runFixNameFiles([]string{"/tmp/mmexport1491013330299.jpg"}, fixNameRunOptions{
+		WriteAll: func(_ string, ts time.Time) error {
+			writtenTime = ts
+			return nil
+		},
+		WorkerCount:  1,
+		ShowProgress: false,
+	})
+
+	if processed != 1 || failed != 0 || skipped != 0 {
+		t.Fatalf("processed=%d failed=%d skipped=%d, want 1 0 0", processed, failed, skipped)
+	}
+
+	// Parse the filename to get the expected UTC time
+	parsedUTC, ok := parser.ParseFilenameTimestamp("mmexport1491013330299.jpg")
+	if !ok {
+		t.Fatal("parser did not recognize mmexport filename")
+	}
+
+	// For Unix timestamp formats, the time should be converted to local timezone
+	want := parsedUTC.In(time.Local)
+	if !writtenTime.Equal(want) {
+		t.Errorf("writtenTime = %v, want %v (both represent same instant in different timezones)", writtenTime, want)
+	}
+}
+
+// TestFixName_album_temp_TimezoneConversion tests that album_temp filenames
+// (Unix timestamp format) are converted from UTC to local timezone.
+func TestFixName_album_temp_TimezoneConversion(t *testing.T) {
+	// album_temp__ss6f5323f071bd7f7b6f521e8ss_1769347547.jpg → 1769347547 seconds → 2025-11-24 08:25:47 UTC
+	// When converted to local timezone, it should reflect the local time
+	var writtenTime time.Time
+	processed, failed, skipped := runFixNameFiles([]string{"/tmp/album_temp__ss6f5323f071bd7f7b6f521e8ss_1769347547.jpg"}, fixNameRunOptions{
+		WriteAll: func(_ string, ts time.Time) error {
+			writtenTime = ts
+			return nil
+		},
+		WorkerCount:  1,
+		ShowProgress: false,
+	})
+
+	if processed != 1 || failed != 0 || skipped != 0 {
+		t.Fatalf("processed=%d failed=%d skipped=%d, want 1 0 0", processed, failed, skipped)
+	}
+
+	// Parse the filename to get the expected UTC time
+	parsedUTC, ok := parser.ParseFilenameTimestamp("album_temp__ss6f5323f071bd7f7b6f521e8ss_1769347547.jpg")
+	if !ok {
+		t.Fatal("parser did not recognize album_temp filename")
+	}
+
+	// For Unix timestamp formats, the time should be converted to local timezone
+	want := parsedUTC.In(time.Local)
+	if !writtenTime.Equal(want) {
+		t.Errorf("writtenTime = %v, want %v (both represent same instant in different timezones)", writtenTime, want)
+	}
+}
+
+// TestFixName_explicit_datetime_no_conversion tests that explicit datetime formats
+// (e.g., IMG_20250415_144530) are NOT converted to local timezone (kept as UTC).
+func TestFixName_explicit_datetime_no_conversion(t *testing.T) {
+	// IMG_20250415_144530 → 2025-04-15 14:45:30 UTC
+	// This format should NOT be converted; it should remain UTC
+	var writtenTime time.Time
+	processed, failed, skipped := runFixNameFiles([]string{"/tmp/IMG_20250415_144530.jpg"}, fixNameRunOptions{
+		WriteAll: func(_ string, ts time.Time) error {
+			writtenTime = ts
+			return nil
+		},
+		WorkerCount:  1,
+		ShowProgress: false,
+	})
+
+	if processed != 1 || failed != 0 || skipped != 0 {
+		t.Fatalf("processed=%d failed=%d skipped=%d, want 1 0 0", processed, failed, skipped)
+	}
+
+	// Parse the filename to get the expected UTC time
+	parsedUTC, ok := parser.ParseFilenameTimestamp("IMG_20250415_144530.jpg")
+	if !ok {
+		t.Fatal("parser did not recognize IMG_ filename")
+	}
+
+	// For explicit datetime formats, the time should remain UTC (no conversion)
+	if !writtenTime.Equal(parsedUTC) {
+		t.Errorf("writtenTime = %v, want %v (UTC, no conversion)", writtenTime, parsedUTC)
+	}
+	if writtenTime.Location() != time.UTC {
+		t.Errorf("writtenTime.Location() = %v, want UTC", writtenTime.Location())
+	}
+}
+
+// TestFixName_pxl_file_unchanged tests that PXL files continue to use the existing
+// timezone conversion logic (unchanged from original behavior).
+func TestFixName_pxl_file_unchanged(t *testing.T) {
+	// PXL_20240101_060000123 → 2024-01-01 06:00:00 UTC
+	// Existing behavior: convert UTC to local timezone
+	var writtenTime time.Time
+	processed, failed, skipped := runFixNameFiles([]string{"/tmp/PXL_20240101_060000123.jpg"}, fixNameRunOptions{
+		WriteAll: func(_ string, ts time.Time) error {
+			writtenTime = ts
+			return nil
+		},
+		WorkerCount:  1,
+		ShowProgress: false,
+	})
+
+	if processed != 1 || failed != 0 || skipped != 0 {
+		t.Fatalf("processed=%d failed=%d skipped=%d, want 1 0 0", processed, failed, skipped)
+	}
+
+	// Parse the filename to get the expected UTC time
+	parsedUTC, ok := parser.ParseFilenameTimestamp("PXL_20240101_060000123.jpg")
+	if !ok {
+		t.Fatal("parser did not recognize PXL_ filename")
+	}
+
+	// PXL files should be converted to local timezone (existing behavior preserved)
+	want := parsedUTC.In(time.Local)
+	if !writtenTime.Equal(want) {
+		t.Errorf("writtenTime = %v, want %v", writtenTime, want)
+	}
+	if writtenTime.Location() != time.Local {
+		t.Errorf("writtenTime.Location() = %v, want Local", writtenTime.Location())
+	}
+}

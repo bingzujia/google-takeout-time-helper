@@ -10,11 +10,16 @@ import (
 
 // pattern groups all timestamp-parsing rules in priority order.
 type pattern struct {
-	re    *regexp.Regexp
-	parse func(m []string) (time.Time, bool)
+	re           *regexp.Regexp
+	parse        func(m []string) (time.Time, bool)
+	isUnixFormat bool // true if pattern uses Unix timestamp (Pattern 9, 13), false for explicit datetime
 }
 
 var loc = time.UTC
+
+// lastMatchedPattern tracks which pattern was matched for the current ParseFilenameTimestamp call.
+// This is used by IsUnixTimestampFormat to determine the timestamp type.
+var lastMatchedPattern *pattern
 
 var patterns = []pattern{
 	// 1. IMG20250409084814 / VID20250409084814 (anchored, IMG/VID prefix)
@@ -23,6 +28,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
+		isUnixFormat: false,
 	},
 	// 2. IMG_20250727_141938 / VID_20250727_141938 (anchored, IMG/VID prefix)
 	{
@@ -30,6 +36,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
+		isUnixFormat: false,
 	},
 	// 3. (\d{8})_(\d{6}) — generic, anywhere in filename
 	{
@@ -37,6 +44,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
+		isUnixFormat: false,
 	},
 	// 4. (\d{8})(\d{6}) — 14 consecutive digits at filename start
 	{
@@ -44,6 +52,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
+		isUnixFormat: false,
 	},
 	// 5. (\d{8})_(\d{3,6}) — WP short time, default to 12:00:00 when < 6 digits
 	{
@@ -56,6 +65,7 @@ var patterns = []pattern{
 			}
 			return parseDateTime8_6(m[1], timeStr)
 		},
+		isUnixFormat: false,
 	},
 	// 6. (\d{8})_(\d{6})~\d+ — burst photos with ~N suffix
 	{
@@ -63,6 +73,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
+		isUnixFormat: false,
 	},
 	// 7. (\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2}) — YYYY-MM-DD-HH-mm-ss
 	{
@@ -70,6 +81,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseComponents(m[1], m[2], m[3], m[4], m[5], m[6])
 		},
+		isUnixFormat: false,
 	},
 	// 8. (\d{8})-(\d{6}) — YYYYMMDD-HHmmss
 	{
@@ -77,6 +89,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
+		isUnixFormat: false,
 	},
 	// 9/10/11. mmexport<13-digit-unix-ms>[(-suffix)|((N))]
 	{
@@ -84,6 +97,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseUnixSeconds(m[1][:10])
 		},
+		isUnixFormat: true,
 	},
 	// 12. TIM图片YYYYMMDDHHMMSS
 	{
@@ -91,6 +105,7 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseDateTime8_6(m[1], m[2])
 		},
+		isUnixFormat: false,
 	},
 	// 13. album_temp__..._<unix-seconds>
 	{
@@ -98,19 +113,34 @@ var patterns = []pattern{
 		parse: func(m []string) (time.Time, bool) {
 			return parseUnixSeconds(m[1])
 		},
+		isUnixFormat: true,
 	},
 }
 
 // ParseFilenameTimestamp returns the time embedded in the filename, or zero time if none found.
+// It also updates lastMatchedPattern to track which pattern was matched (used by IsUnixTimestampFormat).
 func ParseFilenameTimestamp(filename string) (time.Time, bool) {
 	base := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
-	for _, p := range patterns {
+	for i := range patterns {
+		p := &patterns[i]
 		m := p.re.FindStringSubmatch(base)
 		if m != nil {
+			lastMatchedPattern = p
 			return p.parse(m)
 		}
 	}
+	lastMatchedPattern = nil
 	return time.Time{}, false
+}
+
+// IsUnixTimestampFormat returns true if the most recently parsed filename timestamp
+// came from a Unix timestamp format (Pattern 9/13: mmexport or album_temp).
+// Must be called immediately after ParseFilenameTimestamp to get accurate results.
+func IsUnixTimestampFormat(t time.Time) bool {
+	if lastMatchedPattern == nil {
+		return false
+	}
+	return lastMatchedPattern.isUnixFormat
 }
 
 func parseUnixSeconds(secStr string) (time.Time, bool) {

@@ -1,6 +1,7 @@
 package heicconv
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -27,8 +28,8 @@ func TestEncodeTimeoutOversized(t *testing.T) {
 func TestBuildHeifEncArgs(t *testing.T) {
 	args := buildHeifEncArgs("in.jpg", "out.heic", EncodeOptions{})
 
-	// Quality flag must be present with value "35".
-	assertContainsSequence(t, args, "-q", "35")
+	// Quality flag must be present with the default value "75".
+	assertContainsSequence(t, args, "-q", "75")
 
 	// Output flag must be present with the destination path.
 	assertContainsSequence(t, args, "-o", "out.heic")
@@ -42,6 +43,16 @@ func TestBuildHeifEncArgs(t *testing.T) {
 	if slices.Contains(args, "-L") {
 		t.Errorf("args %v must not contain lossless flag -L", args)
 	}
+}
+
+func TestBuildHeifEncArgsCustomQuality(t *testing.T) {
+	args := buildHeifEncArgs("in.jpg", "out.heic", EncodeOptions{Quality: 50})
+	assertContainsSequence(t, args, "-q", "50")
+}
+
+func TestBuildHeifEncArgsZeroQualityFallsBackToDefault(t *testing.T) {
+	args := buildHeifEncArgs("in.jpg", "out.heic", EncodeOptions{Quality: 0})
+	assertContainsSequence(t, args, "-q", fmt.Sprintf("%d", heifEncQuality))
 }
 
 func TestBuildHeifEncArgsChroma420(t *testing.T) {
@@ -89,65 +100,13 @@ func TestBuildHeifEncArgsLosslessNeverPresent(t *testing.T) {
 	}
 }
 
-func TestParseChromaSubsampling(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "4:2:0 typical camera JPEG",
-			input: `[{"SourceFile":"photo.jpg","YCbCrSubSampling":"YCbCr4:2:0 (2 2)"}]`,
-			want:  "420",
-		},
-		{
-			name:  "4:2:2",
-			input: `[{"SourceFile":"photo.jpg","YCbCrSubSampling":"YCbCr4:2:2 (2 1)"}]`,
-			want:  "422",
-		},
-		{
-			name:  "4:4:4",
-			input: `[{"SourceFile":"photo.jpg","YCbCrSubSampling":"YCbCr4:4:4 (1 1)"}]`,
-			want:  "444",
-		},
-		{
-			name:  "missing YCbCrSubSampling tag falls back to 420",
-			input: `[{"SourceFile":"photo.jpg"}]`,
-			want:  "420",
-		},
-		{
-			name:  "empty JSON array falls back to 420",
-			input: `[]`,
-			want:  "420",
-		},
-		{
-			name:  "invalid JSON falls back to 420",
-			input: `not json`,
-			want:  "420",
-		},
-		{
-			name:  "unrecognised value falls back to 420",
-			input: `[{"YCbCrSubSampling":"unknown"}]`,
-			want:  "420",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseChromaSubsampling(tc.input)
-			if got != tc.want {
-				t.Errorf("parseChromaSubsampling(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestDetectChromaSubsamplingNonJPEG(t *testing.T) {
-	formats := []string{"png", "bmp", "gif", "tiff", "webp"}
-	for _, fmt := range formats {
-		got := detectChromaSubsampling("any.file", fmt, nil)
-		if got != "420" {
-			t.Errorf("detectChromaSubsampling for format %q = %q, want 420", fmt, got)
-		}
+// TestDetectChromaSubsamplingAlwaysReturns420 verifies that chroma subsampling is always
+// 4:2:0 to ensure the HEVC encoder uses Main or Main Still Picture profile, which is
+// required for the "heic" brand. Passing 4:4:4 would produce Range Extensions profile
+// (profile_idc=4), causing all major platform decoders to reject the output as corrupt.
+func TestDetectChromaSubsamplingAlwaysReturns420(t *testing.T) {
+	if got := detectChromaSubsampling(); got != "420" {
+		t.Errorf("detectChromaSubsampling() = %q, want 420", got)
 	}
 }
 

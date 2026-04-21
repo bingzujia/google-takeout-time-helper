@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 
 	"github.com/bingzujia/google-takeout-time-helper/internal/destlocker"
-	"github.com/bingzujia/google-takeout-time-helper/internal/exifrunner"
 	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
 	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
 	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
@@ -23,6 +22,7 @@ type Config struct {
 	DryRun       bool
 	ShowProgress bool
 	Workers      int
+	Quality      int        // encoding quality (1–100); 0 means use package default (heifEncQuality = 75)
 	Converter    *Converter
 	Logger       *logutil.Logger // structured log; if nil a Nop logger is used
 	Infof        func(format string, args ...any)
@@ -32,16 +32,17 @@ type Config struct {
 
 // Stats summarizes a directory HEIC conversion run.
 type Stats struct {
-	Scanned            int
-	Planned            int
-	Converted          int
-	RenamedExtensions  int
-	SkippedUnsupported int
-	SkippedAlreadyHEIC int
-	SkippedConflicts   int
-	Failed             int
-	Failures           []Failure
-	Conflicts          []Conflict
+	Scanned                int
+	Planned                int
+	Converted              int
+	RenamedExtensions      int
+	SkippedUnsupported     int
+	SkippedAlreadyHEIC     int
+	SkippedConflicts       int
+	SkippedOversizeDim     int
+	Failed                 int
+	Failures               []Failure
+	Conflicts              []Conflict
 }
 
 // Failure records a file-level failure that did not stop the overall run.
@@ -76,22 +77,6 @@ func Run(cfg Config) (*Stats, error) {
 	stats := &Stats{Scanned: len(files)}
 	if len(files) == 0 {
 		return stats, nil
-	}
-
-	// Pre-query YCbCrSubSampling for all files in one batched exiftool call so
-	// each worker can do a fast map lookup instead of spawning a new subprocess.
-	paths := make([]string, len(files))
-	for i, f := range files {
-		paths[i] = f.Path
-	}
-	chromaResults, _ := exifrunner.BatchQuery(paths, []string{"YCbCrSubSampling"})
-	chromaMap := make(map[string]string, len(files))
-	for i, path := range paths {
-		if chromaResults != nil && i < len(chromaResults) && chromaResults[i] != nil {
-			if v, ok := chromaResults[i]["YCbCrSubSampling"]; ok {
-				chromaMap[path] = v
-			}
-		}
 	}
 
 	converter := cfg.Converter
@@ -131,7 +116,7 @@ func Run(cfg Config) (*Stats, error) {
 	locker := destlocker.New()
 
 	_ = workerpool.Run(files, workers, func(job fileJob) error {
-		processFile(job, cfg, converter, stats, &mu, locker, oversizedSem, chromaMap, infof, warnf, errorf, cfg.Logger)
+		processFile(job, cfg, converter, stats, &mu, locker, oversizedSem, infof, warnf, errorf, cfg.Logger)
 		reporter.Update(int(completed.Add(1)))
 		return nil
 	})
@@ -178,17 +163,17 @@ func processFile(
 	mu *sync.Mutex,
 	locker *destlocker.Locker,
 	oversizedSem chan struct{},
-	chromaMap map[string]string,
 	infof func(string, ...any),
 	warnf func(string, ...any),
 	errorf func(string, ...any),
 	logger *logutil.Logger,
 ) {
-	decoded, err := decodeSourceImage(job.Path, chromaMap)
+	decoded, err := decodeSourceImage(job.Path)
 	if err != nil {
 		handleDecodeOutcome(job, err, stats, mu, warnf, errorf, logger)
 		return
 	}
+	decoded.quality = cfg.Quality
 
 	originalPath := job.Path
 	correctedPath := replaceExtension(job.Path, decoded.canonicalExt)
@@ -322,6 +307,12 @@ func handleDecodeOutcome(job fileJob, err error, stats *Stats, mu *sync.Mutex, w
 		mu.Unlock()
 		warnf("skip %s: already HEIC/HEIF content", job.Path)
 		logger.Skip("already-heic", job.Path)
+	case errors.Is(err, ErrDimensionTooLarge):
+		mu.Lock()
+		stats.SkippedOversizeDim++
+		mu.Unlock()
+		warnf("skip %s: %v — the resulting HEIC would be unreadable on most devices (Apple limit: %d px)", job.Path, err, MaxDecodeDimension)
+		logger.Skip("dimension-too-large", job.Path)
 	case errors.Is(err, image.ErrFormat):
 		if hasKnownImageExtension(job.Path) {
 			recordFailure(stats, mu, job.Path, err)

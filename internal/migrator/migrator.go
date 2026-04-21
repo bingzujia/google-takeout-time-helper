@@ -486,6 +486,10 @@ func moveToManualReview(entry FileEntry, outputDir, manualReviewDir string,
 	manualMetaDir := filepath.Join(manualReviewDir, "metadata")
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
 	meta := buildMetadata(entry.RelPath, filepath.Base(entry.Path), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason)
+	sha256, err := HashFile(dstReview)
+	if err == nil {
+		meta.SHA256 = sha256
+	}
 	WriteMetadata(manualMetaDir, meta)
 }
 
@@ -523,6 +527,10 @@ func moveToManualReviewByPath(srcPath, relPath, outputDir, manualReviewDir strin
 	manualMetaDir := filepath.Join(manualReviewDir, "metadata")
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
 	meta := buildMetadata(relPath, filepath.Base(srcPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason)
+	sha256, err := HashFile(dstReview)
+	if err == nil {
+		meta.SHA256 = sha256
+	}
 	WriteMetadata(manualMetaDir, meta)
 }
 

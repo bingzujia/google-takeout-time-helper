@@ -1,6 +1,7 @@
 package dedup
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -13,11 +14,11 @@ import (
 	"sync/atomic"
 
 	"github.com/bingzujia/google-takeout-time-helper/internal/hashcache"
+	"github.com/bingzujia/google-takeout-time-helper/internal/heicconv"
 	"github.com/bingzujia/google-takeout-time-helper/internal/migrator"
 	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
 	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
 	"github.com/corona10/goimagehash"
-
 )
 
 // supported image extensions
@@ -38,6 +39,7 @@ type Config struct {
 	MaxDecodeMB   int    // max file size in MB to attempt image decoding (0 = unlimited)
 	DecodeWorkers int    // max concurrent image decoders (0 = unlimited)
 	Auto          bool   // automatic mode: keep largest file in root dir, all files in group-xxx/
+	ConvertHEIC   bool   // enable HEIC to JPEG conversion for deduplication (default: true)
 }
 
 // DefaultConfig returns sensible defaults.
@@ -47,6 +49,7 @@ func DefaultConfig() Config {
 		Recursive:   true,
 		DryRun:      true,
 		MaxDecodeMB: 500,
+		ConvertHEIC: true, // enable HEIC conversion by default
 	}
 }
 
@@ -200,7 +203,7 @@ func handleStandardMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, 
 			continue
 		}
 
-		groupName := fmt.Sprintf("group-%d", i+1)
+		groupName := fmt.Sprintf("group-%03d", i+1)
 		groupDir := filepath.Join(dedupDir, groupName)
 
 		for _, f := range group.Files {
@@ -346,7 +349,7 @@ func handleAutoMode(rootDir string, cfg Config, dupGroups []DuplicateGroup, tota
 		// 使用 group.Keep（与 Run() 中的计算一致）保留在根目录的文件
 		bestIdx := group.Keep
 
-		groupName := fmt.Sprintf("group-%d", i+1)
+		groupName := fmt.Sprintf("group-%03d", i+1)
 		groupDir := filepath.Join(dedupDir, groupName)
 
 		for j, f := range group.Files {
@@ -510,20 +513,50 @@ func prepareFileForDecode(originalPath string) (workPath string, cleanup func() 
 		// Unknown file type detected.
 		return "", nil, fmt.Errorf("unknown file type: %s", ft.MimeType)
 	}
-	if ft.NewExt == "" {
-		// Extension already matches the actual content.
-		return originalPath, func() error { return nil }, nil
+
+	// Check if this is a HEIC file
+	if ft.MimeType == "image/heic" || ft.MimeType == "image/heif" {
+		return prepareHEICForDecode(originalPath)
 	}
 
-	// Mismatch: rename to correct extension before calling image.Decode.
-	dir := filepath.Dir(originalPath)
-	stem := strings.TrimSuffix(filepath.Base(originalPath), filepath.Ext(originalPath))
-	tmpPath := filepath.Join(dir, stem+ft.NewExt)
-	if err := os.Rename(originalPath, tmpPath); err != nil {
-		return "", nil, fmt.Errorf("rename for decode: %w", err)
+	// Extension mismatch: rename to correct extension before calling image.Decode.
+	if ft.NewExt != "" {
+		dir := filepath.Dir(originalPath)
+		stem := strings.TrimSuffix(filepath.Base(originalPath), filepath.Ext(originalPath))
+		tmpPath := filepath.Join(dir, stem+ft.NewExt)
+		if err := os.Rename(originalPath, tmpPath); err != nil {
+			return "", nil, fmt.Errorf("rename for decode: %w", err)
+		}
+
+		return tmpPath, func() error { return os.Rename(tmpPath, originalPath) }, nil
 	}
 
-	return tmpPath, func() error { return os.Rename(tmpPath, originalPath) }, nil
+	return originalPath, func() error { return nil }, nil
+}
+
+// prepareHEICForDecode converts a HEIC file to temporary JPEG for processing.
+// Returns the path to the temporary JPEG, a cleanup function to remove it, and any error.
+func prepareHEICForDecode(heicPath string) (workPath string, cleanup func() error, err error) {
+	// Use new heicconv.ConvertFromHEIC decoder instead of the old encoder
+	workPath, cleanup, err = heicconv.ConvertFromHEIC(heicPath, "")
+	if err != nil {
+		// Handle different error types
+		if errors.Is(err, heicconv.ErrHeifConvertNotFound) {
+			return "", nil, fmt.Errorf("heif-convert tool not available: cannot decode HEIC files")
+		}
+		if errors.Is(err, heicconv.ErrHeifConvertVersionOld) {
+			return "", nil, fmt.Errorf("heif-convert version too old: please upgrade")
+		}
+		if errors.Is(err, heicconv.ErrHeifConvertDecodeError) {
+			return "", nil, fmt.Errorf("failed to decode HEIC: %w", err)
+		}
+		if errors.Is(err, heicconv.ErrHeifConvertIOError) {
+			return "", nil, fmt.Errorf("IO error during HEIC decode: %w", err)
+		}
+		return "", nil, fmt.Errorf("heic conversion: %w", err)
+	}
+
+	return workPath, cleanup, nil
 }
 
 func prepareEntry(path string, cache *hashcache.Cache, maxDecodeMB int, sem chan struct{}) preparedResult {

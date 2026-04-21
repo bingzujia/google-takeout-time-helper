@@ -26,7 +26,7 @@ chmod +x takeout-helper-darwin-arm64
 mv takeout-helper-darwin-arm64 /usr/local/bin/takeout-helper
 ```
 
-> 默认发布的二进制可直接使用 `migrate` / `classify` / `fix-exif` / `fix-name` / `dedup` / `rename`。  
+> 默认发布的二进制可直接使用 `migrate` / `classify` / `fix-exif` / `fix-name` / `dedup` / `rename` / `rename-screenshot` / `format-qq-media`。  
 > 若要使用 `convert`，需在系统中安装 **`heif-enc`** 与 **`exiftool`**。
 
 ### 方式二：从源码编译
@@ -64,13 +64,15 @@ heif-enc --version
 ## 命令
 
 ```
-takeout-helper migrate        --input-dir <dir> --output-dir <dir>   # 迁移 Google Takeout 照片
-takeout-helper classify       --input-dir <dir> --output-dir <dir>   # 按类型分类媒体文件
-takeout-helper convert        --input-dir <dir>                      # 将根目录图片原地转换为 HEIC
-takeout-helper fix-exif       --input-dir <dir>                      # 同步 DateTimeOriginal → CreateDate & ModifyDate
-takeout-helper fix-name       --input-dir <dir>                      # 同步文件名时间戳 → DateTimeOriginal, CreateDate & ModifyDate
-takeout-helper dedup          --input-dir <dir>                      # 检测并整理重复图片
-takeout-helper rename         --input-dir <dir>                      # 批量重命名照片/视频文件
+takeout-helper migrate           --input-dir <dir> --output-dir <dir>   # 迁移 Google Takeout 照片
+takeout-helper classify          --input-dir <dir> --output-dir <dir>   # 按类型分类媒体文件
+takeout-helper convert           --input-dir <dir>                      # 将根目录图片原地转换为 HEIC
+takeout-helper fix-exif          --input-dir <dir>                      # 同步 DateTimeOriginal → CreateDate & ModifyDate
+takeout-helper fix-name          --input-dir <dir>                      # 同步文件名时间戳 → DateTimeOriginal, CreateDate & ModifyDate
+takeout-helper dedup             --input-dir <dir>                      # 检测并整理重复图片
+takeout-helper rename            --input-dir <dir>                      # 批量重命名照片/视频文件
+takeout-helper rename-screenshot --input-dir <dir>                      # 批量重命名截图文件
+takeout-helper format-qq-media   --input-dir <dir>                      # 按时间戳格式化 QQ 导出的媒体文件
 ```
 
 `takeout-helper` 专注于修复 Google Takeout 导出照片的时间戳，并提供分类整理工具。各命令均支持 `--dry-run` 预览模式，不会实际修改文件（`fix-exif` 使用 `--dry-run`）。所有写入 EXIF 元数据的命令均需安装 `exiftool`。
@@ -355,6 +357,110 @@ Renamed: 42, Skipped: 3, Errors: 0
 
 ---
 
+### `takeout-helper rename-screenshot` — 批量重命名截图文件
+
+**用途**：扫描 `--input-dir` 指定目录下的**一级**截图文件（非递归），识别各类截图文件名格式，解析其中的时间戳，统一转换为标准化名称 `Screenshot_YYYY-MM-DD-HH-MM-SS-MS.{ext}`（完整到毫秒精度）。
+
+支持格式：`png`、`jpg`、`jpeg`、`gif`、`bmp`、`tiff`、`tif`、`webp`、`heic`、`heif`。
+
+**支持的截图时间戳格式**：
+
+| 格式 | 例子 | 精度 |
+|------|------|------|
+| YYYY-MM-DD-HH-MM-SS-MS | `Screenshot_2025-07-18-09-23-54-65.png` | 毫秒 |
+| YYYYMMDD_HHMMSS | `screenshot20250718_092354.jpg` | 秒 |
+| YYYY-MM-DD_HH-MM-SS | `Screenshot_2025-07-18_09-23-54.png` | 秒 |
+| YYYY_M_D_H_M_S（无零补齐） | `screenshot_2025_7_18_9_23_54.png` | 秒 |
+| YYYY-MM-DD（仅日期） | `screenshot_2025-07-18.jpg` | 日（时间设为 00:00:00） |
+| Unix 时间戳 10 位（秒） | `screenshot1634560000.jpg` | 秒 |
+| Unix 时间戳 13 位（毫秒） | `mmscreenshot1727421404387.jpg` | 毫秒 |
+
+**文件检测**：采用宽松的 substring 匹配，检测文件名中是否包含 `"screenshot"`（大小写不敏感）。此策略覆盖各类截图软件生成的格式（`Screenshot_*`、`screenshot_*`、`mmscreenshot*`、`wxscreenshot*` 等）。
+
+**冲突处理**：目标文件名已存在时自动追加 `_001`、`_002` … 后缀。
+
+**无扩展名文件**：保留原有文件名，不强制添加默认扩展名。
+
+**用法**：
+
+```bash
+takeout-helper rename-screenshot --input-dir ./Screenshots            # 重命名
+takeout-helper rename-screenshot --input-dir ./Screenshots --dry-run  # 仅预览
+```
+
+**预期输出**：
+
+```
+Input:  /path/to/Screenshots
+
+🔄 [████████████████████████░░░░░░░░░░░░░░░░] 60% (15/25)
+
+Renamed: 20, Skipped: 3, Errors: 0
+Log: /path/to/Screenshots/takeout-helper-log/rename-screenshot-20250419-001.log
+```
+
+**参数说明**：
+
+| 标志 | 默认值 | 说明 |
+|------|--------|------|
+| `--input-dir` | （必填） | 目标目录 |
+| `--dry-run` | false | 仅预览，不实际修改 |
+
+---
+
+### `takeout-helper format-qq-media` — 格式化 QQ 导出的媒体文件
+
+**用途**：扫描 `--input-dir` 指定目录下的 QQ 导出媒体文件，识别文件内容类型（图片/视频），解析文件名中的时间戳（支持 7 种格式），统一转换为标准化名称 `Image_<unix-ms>.{ext}` 或 `Video_<unix-ms>.{ext}`。
+
+支持图片格式：`jpg`、`jpeg`、`png`、`gif`、`bmp`、`tiff`、`tif`、`webp`、`heic`、`heif`。
+支持视频格式：`mp4`、`mov`、`avi`、`mkv`、`webm`、`flv`。
+
+**支持的 QQ 时间戳格式**：
+
+| 模式 | 例子 | 精度 |
+|------|------|------|
+| `_YYYYMMDD_HHMMSS` | `photo_20170709_002844.jpg` | 秒 |
+| 13 位 Unix 毫秒 | `photo_1688017744459.jpg` | 毫秒 |
+| `QQ视频YYYYMMDDHHMMSS` | `QQ视频20150720105516.mp4` | 秒 |
+| `Record_YYYY-MM-DD-HH-MM-SS` | `Record_2024-12-19-16-07-17.mp4` | 秒 |
+| `Snipaste_YYYY-MM-DD_HH-MM-SS` | `Snipaste_2018-09-17_18-07-29.png` | 秒 |
+| `tb_image_share_13digits` | `tb_image_share_1661951220361.jpg` | 毫秒 |
+| `TIM图片YYYYMMDDHHMMSS` | `TIM图片20181215191143.jpg` | 秒 |
+| 文件修改时间（备用） | *无匹配格式时使用* | 秒 |
+
+**文件类型检测**：采用二级策略
+1. **首选**：读取文件头（magic bytes）使用 `http.DetectContentType()` 检测真实 MIME 类型
+2. **备用**：扩展名匹配（速度更快，重复处理同类文件时命中）
+
+**冲突处理**：目标文件名已存在时自动追加 `_001`、`_002` … 后缀（保存在扩展名前）。
+
+**用法**：
+
+```bash
+takeout-helper format-qq-media --input-dir ./QQ_exports            # 格式化
+takeout-helper format-qq-media --input-dir ./QQ_exports --dry-run  # 仅预览
+```
+
+**预期输出**：
+
+```
+Input:  /path/to/QQ_exports
+
+🔄 [████████████████████████░░░░░░░░░░░░░░░░] 60% (15/25)
+
+Renamed: 20, Skipped: 3, Errors: 0
+Log: /path/to/QQ_exports/takeout-helper-log/format-qq-media-20250419-001.log
+```
+
+**参数说明**：
+
+| 标志 | 默认值 | 说明 |
+|------|--------|------|
+| `--input-dir` | （必填） | 目标目录 |
+| `--dry-run` | false | 仅预览，不实际修改 |
+
+---
+
 ## 日志
 
 所有命令均将结构化日志写入 `takeout-helper-log/` 子目录，按日期和递增编号命名：
@@ -372,6 +478,8 @@ takeout-helper-log/{command}-{YYYYMMDD}-{NNN}.log
 | `convert` | `--input-dir` 根目录 | `photos/takeout-helper-log/convert-20240115-001.log` |
 | `dedup` | `--input-dir` 根目录 | `photos/takeout-helper-log/dedup-20240115-001.log` |
 | `rename` | `--input-dir` 根目录 | `photos/takeout-helper-log/rename-20240115-001.log` |
+| `rename-screenshot` | `--input-dir` 根目录 | `screenshots/takeout-helper-log/rename-screenshot-20250419-001.log` |
+| `format-qq-media` | `--input-dir` 根目录 | `qq_exports/takeout-helper-log/format-qq-media-20250419-001.log` |
 
 - 同一天多次运行时，编号自动递增（`-001`、`-002`、…）
 - `--dry-run` 模式下不产生日志文件
@@ -404,9 +512,17 @@ takeout-helper classify --input-dir "output" --output-dir "sorted"
 takeout-helper dedup --input-dir "output" --dry-run   # 先预览
 takeout-helper dedup --input-dir "output"             # 确认后执行
 
-# 7. （可选）按时间批量重命名
+# 7. （可选）批量重命名照片
 takeout-helper rename --input-dir "output" --dry-run   # 先预览
 takeout-helper rename --input-dir "output"
+
+# 8. （可选）批量重命名截图（已分类出的或单独目录）
+takeout-helper rename-screenshot --input-dir "sorted/screenshot" --dry-run  # 先预览
+takeout-helper rename-screenshot --input-dir "sorted/screenshot"
+
+# 9. （可选）格式化 QQ 导出的媒体文件（另一数据源）
+takeout-helper format-qq-media --input-dir "qq_exports" --dry-run  # 先预览
+takeout-helper format-qq-media --input-dir "qq_exports"
 ```
 
 ---

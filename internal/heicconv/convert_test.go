@@ -178,7 +178,7 @@ func TestDecodeSourceImageUsesActualContentForCanonicalExtension(t *testing.T) {
 		t.Fatalf("EncodeJPEG: %v", err)
 	}
 
-	decoded, err := decodeSourceImage(srcPath, nil)
+	decoded, err := decodeSourceImage(srcPath)
 	if err != nil {
 		t.Fatalf("decodeSourceImage returned error: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestDecodeSourceImageRecordsPixelCount(t *testing.T) {
 		t.Fatalf("EncodePNG: %v", err)
 	}
 
-	decoded, err := decodeSourceImage(srcPath, nil)
+	decoded, err := decodeSourceImage(srcPath)
 	if err != nil {
 		t.Fatalf("decodeSourceImage: %v", err)
 	}
@@ -307,5 +307,51 @@ func TestConvertPassesOversizedOptionToEncoder(t *testing.T) {
 	}
 	if enc.lastSrc != srcPath {
 		t.Fatalf("encoder srcPath = %q, want %q", enc.lastSrc, srcPath)
+	}
+}
+
+func TestConvertRejectsDimensionTooLarge(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create an image that exceeds MaxDecodeDimension in height.
+	// Use a minimal PNG so image.DecodeConfig can read its header without
+	// allocating a full 16384-row pixel buffer.
+	srcPath := filepath.Join(tmpDir, "tall.png")
+	img := image.NewRGBA(image.Rect(0, 0, 1, MaxDecodeDimension+1))
+	if err := EncodePNG(srcPath, img); err != nil {
+		t.Fatalf("EncodePNG: %v", err)
+	}
+
+	err := (&Converter{
+		encoder:          &fakeEncoder{},
+		metadataRestorer: &fakeMetadataRestorer{},
+		stat:             os.Stat,
+		chtimes:          os.Chtimes,
+	}).Convert(srcPath, filepath.Join(tmpDir, "out.heic"))
+	if err == nil {
+		t.Fatal("expected error for oversized dimension, got nil")
+	}
+
+	var convErr *Error
+	if !errors.As(err, &convErr) || convErr.Kind != ErrorKindDecode {
+		t.Fatalf("error = %#v, want decode Error", err)
+	}
+	if !errors.Is(err, ErrDimensionTooLarge) {
+		t.Fatalf("error = %v, want ErrDimensionTooLarge", err)
+	}
+}
+
+func TestDecodeSourceImageAcceptsMaxDimension(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// An image exactly at MaxDecodeDimension should be accepted.
+	srcPath := filepath.Join(tmpDir, "exact.png")
+	img := image.NewRGBA(image.Rect(0, 0, MaxDecodeDimension, 1))
+	if err := EncodePNG(srcPath, img); err != nil {
+		t.Fatalf("EncodePNG: %v", err)
+	}
+
+	if _, err := decodeSourceImage(srcPath); err != nil {
+		t.Fatalf("expected no error for %d-wide image, got: %v", MaxDecodeDimension, err)
 	}
 }

@@ -33,8 +33,17 @@ const (
 // is treated as oversized and receives stricter encode controls to reduce OOM risk.
 const oversizedPixelThreshold int64 = 40_000_000
 
+// MaxDecodeDimension is the maximum width or height (in pixels) that a source image
+// may have before conversion is refused. Apple ImageIO rejects HEIC with any
+// dimension > 16383, and most hardware HEVC decoders cap at 16384 px.
+const MaxDecodeDimension = 16383
+
 // ErrAlreadyHEIC indicates that the source file is already HEIC/HEIF content.
 var ErrAlreadyHEIC = errors.New("source image is already HEIC/HEIF")
+
+// ErrDimensionTooLarge indicates that a source image dimension exceeds MaxDecodeDimension
+// and the resulting HEIC would be undecodable on most consumer devices.
+var ErrDimensionTooLarge = errors.New("source image dimension exceeds maximum HEIC decode limit")
 
 // Error wraps a stage-specific conversion error.
 type Error struct {
@@ -59,6 +68,8 @@ type EncodeOptions struct {
 	// ChromaSubsampling is the chroma subsampling value to pass to the encoder
 	// ("420", "422", or "444"). Empty string means use the encoder default.
 	ChromaSubsampling string
+	// Quality is the encoding quality (1–100). 0 means use the package default (heifEncQuality).
+	Quality int
 }
 
 // IsOversized reports whether pixelCount exceeds the oversized threshold.
@@ -105,7 +116,7 @@ func (c *Converter) Convert(srcPath, dstPath string) error {
 		return &Error{Kind: ErrorKindDecode, Path: srcPath, Err: err}
 	}
 
-	decoded, err := decodeSourceImage(srcPath, nil)
+	decoded, err := decodeSourceImage(srcPath)
 	if err != nil {
 		return &Error{Kind: ErrorKindDecode, Path: srcPath, Err: err}
 	}
@@ -118,6 +129,7 @@ type decodedSource struct {
 	canonicalExt      string
 	pixelCount        int64
 	chromaSubsampling string
+	quality           int // 0 means use package default
 }
 
 func (c *Converter) convertDecoded(srcPath, dstPath string, srcInfo os.FileInfo, decoded *decodedSource) error {
@@ -128,6 +140,7 @@ func (c *Converter) convertDecoded(srcPath, dstPath string, srcInfo os.FileInfo,
 	opts := EncodeOptions{
 		Oversized:         IsOversized(decoded.pixelCount),
 		ChromaSubsampling: decoded.chromaSubsampling,
+		Quality:           decoded.quality,
 	}
 	if err := c.encoder.Encode(srcPath, dstPath, opts); err != nil {
 		return &Error{Kind: ErrorKindEncode, Path: dstPath, Err: err}
@@ -148,7 +161,7 @@ func (c *Converter) convertDecoded(srcPath, dstPath string, srcInfo os.FileInfo,
 
 // decodeSourceImage opens srcPath, confirms it is not already HEIC/HEIF, and uses
 // image.DecodeConfig to read the format and dimensions without loading the full pixel data.
-func decodeSourceImage(srcPath string, chromaMap map[string]string) (*decodedSource, error) {
+func decodeSourceImage(srcPath string) (*decodedSource, error) {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return nil, err
@@ -178,12 +191,16 @@ func decodeSourceImage(srcPath string, chromaMap map[string]string) (*decodedSou
 		return nil, ErrAlreadyHEIC
 	}
 
+	if cfg.Width > MaxDecodeDimension || cfg.Height > MaxDecodeDimension {
+		return nil, fmt.Errorf("%w: %dx%d (max %d)", ErrDimensionTooLarge, cfg.Width, cfg.Height, MaxDecodeDimension)
+	}
+
 	normalizedFormat := normalizeSourceFormat(format, srcPath)
 	return &decodedSource{
 		format:            normalizedFormat,
 		canonicalExt:      canonicalExtensionForFormat(normalizedFormat),
 		pixelCount:        int64(cfg.Width) * int64(cfg.Height),
-		chromaSubsampling: detectChromaSubsampling(srcPath, normalizedFormat, chromaMap),
+		chromaSubsampling: detectChromaSubsampling(),
 	}, nil
 }
 
@@ -266,7 +283,9 @@ func (exiftoolMetadataRestorer) CopyAll(srcPath, dstPath string) error {
 		"-m",
 		"-overwrite_original",
 		"-TagsFromFile", srcPath,
-		"-all:all",
+		"-EXIF:all",
+		"-XMP:all",
+		"-ICC_Profile:all",
 		dstPath,
 	)
 }

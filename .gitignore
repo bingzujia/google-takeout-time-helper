@@ -7,6 +7,9 @@
 /gtoh
 /test_matcher
 /openspec/
+/output_bk/
+/test/
+*.test
 /.github/skills/
 /.github/prompts/
 copilot-session-*.md

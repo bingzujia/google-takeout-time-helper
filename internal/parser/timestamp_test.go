@@ -85,3 +85,64 @@ func TestParseFilenameTimestamp(t *testing.T) {
 		})
 	}
 }
+
+func TestIsUnixTimestampFormat(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+		wantTrue bool
+	}{
+		// Pattern 9 (mmexport): 13-digit milliseconds → Unix format = true
+		{
+			name:     "Pattern 9 - mmexport1491013330299",
+			filename: "mmexport1491013330299.jpg",
+			wantTrue: true,
+		},
+		// Pattern 13 (album_temp): 10-digit seconds → Unix format = true
+		{
+			name:     "Pattern 13 - album_temp with 10-digit seconds",
+			filename: "album_temp__ss2e0320e05cc92c2e0796c5ass_1769347547.jpg",
+			wantTrue: true,
+		},
+		// Pattern 1 (IMG): explicit datetime → not Unix format = false
+		{
+			name:     "Pattern 1 - IMG20250409084814",
+			filename: "IMG20250409084814.jpg",
+			wantTrue: false,
+		},
+		// Pattern 2 (IMG_): explicit datetime → not Unix format = false
+		{
+			name:     "Pattern 2 - IMG_20230302_112040",
+			filename: "IMG_20230302_112040.jpg",
+			wantTrue: false,
+		},
+		// Pattern 3-8 (generic datetime formats) → not Unix format = false
+		{
+			name:     "Pattern 3-8 - 20151120_120004",
+			filename: "20151120_120004.jpg",
+			wantTrue: false,
+		},
+		// Pattern 12 (TIM图片): explicit datetime → not Unix format = false
+		{
+			name:     "Pattern 12 - TIM图片20181215185932",
+			filename: "TIM图片20181215185932.jpg",
+			wantTrue: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Must call ParseFilenameTimestamp first to set lastMatchedPattern
+			ts, ok := ParseFilenameTimestamp(tc.filename)
+			if !ok {
+				t.Fatalf("ParseFilenameTimestamp(%q) failed to parse", tc.filename)
+			}
+
+			// Now check if it's recognized as Unix format
+			got := IsUnixTimestampFormat(ts)
+			if got != tc.wantTrue {
+				t.Errorf("IsUnixTimestampFormat(%v) = %v, want %v", ts, got, tc.wantTrue)
+			}
+		})
+	}
+}

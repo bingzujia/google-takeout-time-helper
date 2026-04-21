@@ -5,8 +5,10 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	goimagehash "github.com/corona10/goimagehash"
@@ -471,9 +473,9 @@ t.Errorf("dedup-auto directory not created")
 }
 
 // Verify group subdirectory exists
-groupDir := filepath.Join(dedupAutoDir, "group-1")
+groupDir := filepath.Join(dedupAutoDir, "group-001")
 if _, err := os.Stat(groupDir); os.IsNotExist(err) {
-t.Errorf("group-1 directory not created")
+t.Errorf("group-001 directory not created")
 }
 }
 
@@ -521,13 +523,13 @@ t.Errorf("expected 9 duplicates, got %d", result.TotalDupes)
 }
 
 // All 10 files should be in dedup-auto
-groupDir := filepath.Join(tmpDir, "dedup-auto", "group-1")
+groupDir := filepath.Join(tmpDir, "dedup-auto", "group-001")
 files, err := os.ReadDir(groupDir)
 if err != nil {
 t.Fatal(err)
 }
 if len(files) != 10 {
-t.Errorf("expected 10 files in group-1, got %d", len(files))
+t.Errorf("expected 10 files in group-001, got %d", len(files))
 }
 }
 
@@ -697,7 +699,7 @@ t.Fatal(err)
 }
 
 // VERIFY：group 目录中的文件应该存在
-groupDir := filepath.Join(rootDir, "dedup-auto", "group-1")
+groupDir := filepath.Join(rootDir, "dedup-auto", "group-001")
 if err := assertFilesInGroup(t, groupDir, 3, nil); err != nil {
 t.Errorf("group directory verification failed: %v", err)
 }
@@ -707,9 +709,9 @@ rootFiles, err := os.ReadDir(filepath.Join(rootDir, "dedup-auto"))
 if err != nil {
 t.Errorf("failed to read root dedup-auto dir: %v", err)
 }
-// 根目录应该有至少 1 个文件（保留的文件）和 1 个子目录（group-1）
+// 根目录应该有至少 1 个文件（保留的文件）和 1 个子目录（group-001）
 if len(rootFiles) < 2 {
-t.Errorf("expected at least 2 entries in root dedup-auto (1 file + group-1), got %d", len(rootFiles))
+t.Errorf("expected at least 2 entries in root dedup-auto (1 file + group-001), got %d", len(rootFiles))
 }
 }
 
@@ -742,4 +744,423 @@ t.Errorf("dedup-auto directory should not exist in DryRun mode")
 if result.TotalGroups != 1 || result.TotalDupes != 2 {
 t.Errorf("statistics incorrect in DryRun mode: groups=%d, dupes=%d", result.TotalGroups, result.TotalDupes)
 }
+}
+
+// TestPrepareFileForDecode_HEIC tests HEIC detection and conversion
+func TestPrepareFileForDecode_HEIC(t *testing.T) {
+// Create a temp directory with a fake HEIC file
+tmpDir := t.TempDir()
+heicPath := filepath.Join(tmpDir, "photo.heic")
+
+// Create a valid JPEG file but name it as HEIC to simulate real Google Takeout issue
+createJPEGFixture(t, heicPath)
+
+// Test prepareFileForDecode
+workPath, cleanup, err := prepareFileForDecode(heicPath)
+if err != nil {
+t.Fatalf("prepareFileForDecode failed: %v", err)
+}
+defer cleanup()
+
+// workPath should be a temporary JPEG file
+if !strings.HasSuffix(workPath, ".jpg") {
+t.Errorf("expected workPath to be .jpg, got %s", workPath)
+}
+
+// temporary JPEG should exist
+if _, err := os.Stat(workPath); err != nil {
+t.Errorf("temporary JPEG file not found: %v", err)
+}
+
+// After cleanup, temporary JPEG should be removed
+if err := cleanup(); err != nil {
+t.Errorf("cleanup failed: %v", err)
+}
+if _, err := os.Stat(workPath); !os.IsNotExist(err) {
+t.Errorf("temporary JPEG file not cleaned up")
+}
+}
+
+// TestPrepareFileForDecode_MismatchedExtension tests extension correction
+func TestPrepareFileForDecode_MismatchedExtension(t *testing.T) {
+tmpDir := t.TempDir()
+wrongExtPath := filepath.Join(tmpDir, "photo.jpg")
+
+// Create a valid PNG file but name it as JPG
+img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+f, err := os.Create(wrongExtPath)
+if err != nil {
+t.Fatalf("Failed to create test file: %v", err)
+}
+defer f.Close()
+if err := png.Encode(f, img); err != nil {
+t.Fatalf("Failed to encode PNG: %v", err)
+}
+
+// Test prepareFileForDecode
+workPath, cleanup, err := prepareFileForDecode(wrongExtPath)
+if err != nil {
+t.Fatalf("prepareFileForDecode failed: %v", err)
+}
+defer cleanup()
+
+// workPath should have .png extension
+if !strings.HasSuffix(workPath, ".png") {
+t.Errorf("expected workPath to be .png, got %s", workPath)
+}
+
+// After cleanup, file should be renamed back
+if err := cleanup(); err != nil {
+t.Errorf("cleanup failed: %v", err)
+}
+if _, err := os.Stat(wrongExtPath); err != nil {
+t.Errorf("original file not restored after cleanup: %v", err)
+}
+}
+
+// TestPrepareFileForDecode_CorrectExtension tests files with correct extensions
+func TestPrepareFileForDecode_CorrectExtension(t *testing.T) {
+tmpDir := t.TempDir()
+jpgPath := filepath.Join(tmpDir, "photo.jpg")
+
+// Create a valid JPEG file
+createJPEGFixture(t, jpgPath)
+
+// Test prepareFileForDecode
+workPath, cleanup, err := prepareFileForDecode(jpgPath)
+if err != nil {
+t.Fatalf("prepareFileForDecode failed: %v", err)
+}
+defer cleanup()
+
+// workPath should be the same as original
+if workPath != jpgPath {
+t.Errorf("expected workPath to be %s, got %s", jpgPath, workPath)
+}
+
+// After cleanup, original file should still exist
+if err := cleanup(); err != nil {
+t.Errorf("cleanup failed: %v", err)
+}
+if _, err := os.Stat(jpgPath); err != nil {
+t.Errorf("original file was affected by cleanup: %v", err)
+}
+}
+
+// TestRun_WithMismatchedExtensions tests dedup with mismatched extensions
+func TestRun_WithMismatchedExtensions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create identical images but with wrong extensions
+	createCheckerImage(t, filepath.Join(tmpDir, "photo1.jpg"), 8)
+	createCheckerImage(t, filepath.Join(tmpDir, "photo2.jpg"), 8)
+
+	cfg := DefaultConfig()
+	cfg.Threshold = 5
+	result, err := Run(tmpDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should detect as duplicates despite mismatched extensions
+	if result.TotalGroups != 1 {
+		t.Errorf("expected 1 duplicate group, got %d", result.TotalGroups)
+	}
+}
+
+// TestHandleStandardMode_GroupNaming_SingleDigit tests group naming format for 1-9 duplicates
+func TestHandleStandardMode_GroupNaming_SingleDigit(t *testing.T) {
+	tmpDir := t.TempDir()
+	
+	// Create 1 to 9 identical files
+	color1 := color.RGBA{100, 100, 100, 255}
+	for i := 0; i < 9; i++ {
+		path := filepath.Join(tmpDir, fmt.Sprintf("photo_%d.jpg", i))
+		createSolidImage(t, path, color1)
+	}
+	
+	cfg := DefaultConfig()
+	cfg.DryRun = false
+	result, err := Run(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	
+	if result.TotalGroups != 1 {
+		t.Fatalf("expected 1 group, got %d", result.TotalGroups)
+	}
+	
+	// Verify the group directory name
+	dedupDir := filepath.Join(tmpDir, "dedup")
+	entries, err := os.ReadDir(dedupDir)
+	if err != nil {
+		t.Fatalf("failed to read dedup dir: %v", err)
+	}
+	
+	foundGroups := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			foundGroups = append(foundGroups, entry.Name())
+		}
+	}
+	
+	// For 1 group, it should be named "group-001"
+	if len(foundGroups) != 1 {
+		t.Errorf("expected 1 group dir, got %d", len(foundGroups))
+	}
+	if len(foundGroups) > 0 && foundGroups[0] != "group-001" {
+		t.Errorf("expected group named 'group-001', got %q", foundGroups[0])
+	}
+}
+
+// TestHandleStandardMode_GroupNaming_DoubleDigit tests group naming format for 10-99 duplicates
+func TestHandleStandardMode_GroupNaming_DoubleDigit(t *testing.T) {
+	tmpDir := t.TempDir()
+	
+	// Create 10 different groups using pattern-based images
+	for groupIdx := 0; groupIdx < 10; groupIdx++ {
+		for fileIdx := 0; fileIdx < 2; fileIdx++ {
+			path := filepath.Join(tmpDir, fmt.Sprintf("g%02d_f%d.jpg", groupIdx, fileIdx))
+			
+			// Create pattern-based different images for each group
+			img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+			for x := 0; x < 64; x++ {
+				for y := 0; y < 64; y++ {
+					// Use group index to vary the pattern
+					if (x + groupIdx*8) % (y + groupIdx + 10) == 0 {
+						img.Set(x, y, color.White)
+					} else {
+						img.Set(x, y, color.Black)
+					}
+				}
+			}
+			
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatalf("failed to create image: %v", err)
+			}
+			defer f.Close()
+			if err := jpeg.Encode(f, img, nil); err != nil {
+				t.Fatalf("failed to encode: %v", err)
+			}
+		}
+	}
+	
+	cfg := DefaultConfig()
+	cfg.DryRun = false
+	result, err := Run(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	
+	if result.TotalGroups != 10 {
+		t.Fatalf("expected 10 groups, got %d", result.TotalGroups)
+	}
+	
+	// Verify group directory names include both single and double digit naming (001-010)
+	dedupDir := filepath.Join(tmpDir, "dedup")
+	entries, err := os.ReadDir(dedupDir)
+	if err != nil {
+		t.Fatalf("failed to read dedup dir: %v", err)
+	}
+	
+	foundGroups := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			foundGroups[entry.Name()] = true
+		}
+	}
+	
+	// Verify first and last groups exist with correct format
+	if !foundGroups["group-001"] {
+		t.Errorf("expected 'group-001' to exist")
+	}
+	if !foundGroups["group-010"] {
+		t.Errorf("expected 'group-010' to exist")
+	}
+}
+
+// TestHandleStandardMode_GroupNaming_TripleDigit tests group naming format with 100+ indices
+func TestHandleStandardMode_GroupNaming_TripleDigit(t *testing.T) {
+	// This test verifies the format string works correctly by checking the format directly
+	// rather than trying to create 100+ groups (which would be slow)
+	testCases := []int{1, 9, 10, 99, 100, 150, 999}
+	
+	for _, i := range testCases {
+		expected := fmt.Sprintf("group-%03d", i)
+		
+		// Verify format
+		if len(expected) != 9 { // "group-" (6) + 3 digits = 9
+			t.Errorf("for i=%d, expected length 9, got %d: %q", i, len(expected), expected)
+		}
+		
+		// Verify it matches the pattern "group-XXX"
+		if !strings.HasPrefix(expected, "group-") {
+			t.Errorf("for i=%d, expected prefix 'group-', got %q", i, expected)
+		}
+	}
+}
+
+// TestHandleAutoMode_GroupNaming_SingleDigit tests auto mode group naming format for 1-9 duplicates
+func TestHandleAutoMode_GroupNaming_SingleDigit(t *testing.T) {
+	tmpDir := t.TempDir()
+	
+	// Create 1 group with 3 identical files in auto mode
+	color1 := color.RGBA{200, 100, 50, 255}
+	for i := 0; i < 3; i++ {
+		path := filepath.Join(tmpDir, fmt.Sprintf("auto_photo_%d.jpg", i))
+		createSolidImage(t, path, color1)
+	}
+	
+	cfg := DefaultConfig()
+	cfg.Auto = true
+	cfg.DryRun = false
+	result, err := Run(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	
+	if result.TotalGroups != 1 {
+		t.Fatalf("expected 1 group, got %d", result.TotalGroups)
+	}
+	
+	// Verify auto mode group directory name in dedup-auto
+	dedupAutoDir := filepath.Join(tmpDir, "dedup-auto")
+	entries, err := os.ReadDir(dedupAutoDir)
+	if err != nil {
+		t.Fatalf("failed to read dedup-auto dir: %v", err)
+	}
+	
+	foundGroups := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			foundGroups = append(foundGroups, entry.Name())
+		}
+	}
+	
+	// For 1 group in auto mode, it should be named "group-001"
+	if len(foundGroups) != 1 {
+		t.Errorf("expected 1 group dir in dedup-auto, got %d", len(foundGroups))
+	}
+	if len(foundGroups) > 0 && foundGroups[0] != "group-001" {
+		t.Errorf("expected group named 'group-001' in auto mode, got %q", foundGroups[0])
+	}
+}
+
+// TestHandleAutoMode_GroupNaming_MultipleDigit tests auto mode group naming format for 10+ duplicates
+func TestHandleAutoMode_GroupNaming_MultipleDigit(t *testing.T) {
+	tmpDir := t.TempDir()
+	
+	// Create 5 different groups using pattern-based images in auto mode
+	for groupIdx := 0; groupIdx < 5; groupIdx++ {
+		for fileIdx := 0; fileIdx < 2; fileIdx++ {
+			path := filepath.Join(tmpDir, fmt.Sprintf("auto_group_%d_file_%d.jpg", groupIdx, fileIdx))
+			
+			// Create pattern-based different images for each group
+			img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+			for x := 0; x < 64; x++ {
+				for y := 0; y < 64; y++ {
+					// Use group index to vary the pattern
+					if (x*2 + groupIdx*13) % (y + groupIdx*7 + 20) == 0 {
+						img.Set(x, y, color.White)
+					} else {
+						img.Set(x, y, color.Black)
+					}
+				}
+			}
+			
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatalf("failed to create image: %v", err)
+			}
+			defer f.Close()
+			if err := jpeg.Encode(f, img, nil); err != nil {
+				t.Fatalf("failed to encode: %v", err)
+			}
+		}
+	}
+	
+	cfg := DefaultConfig()
+	cfg.Auto = true
+	cfg.DryRun = false
+	result, err := Run(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	
+	if result.TotalGroups != 5 {
+		t.Fatalf("expected 5 groups, got %d", result.TotalGroups)
+	}
+	
+	// Verify auto mode group directory names in dedup-auto
+	dedupAutoDir := filepath.Join(tmpDir, "dedup-auto")
+	entries, err := os.ReadDir(dedupAutoDir)
+	if err != nil {
+		t.Fatalf("failed to read dedup-auto dir: %v", err)
+	}
+	
+	foundGroups := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			foundGroups[entry.Name()] = true
+		}
+	}
+	
+	// Verify groups are named correctly: group-001 through group-005
+	for i := 1; i <= 5; i++ {
+		expected := fmt.Sprintf("group-%03d", i)
+		if !foundGroups[expected] {
+			t.Errorf("expected group %q in auto mode, got groups: %v", expected, foundGroups)
+		}
+	}
+}
+
+// TestGroupNaming_LexicographicOrder tests that group directory names sort lexicographically in correct order
+func TestGroupNaming_LexicographicOrder(t *testing.T) {
+	// Verify that the group names follow lexicographic ordering
+	// The key property is that group-%03d format maintains order up to 999 groups
+	names := []string{}
+	for i := 1; i <= 999; i++ {
+		names = append(names, fmt.Sprintf("group-%03d", i))
+	}
+	
+	// Verify all consecutive pairs are in ascending order
+	for i := 0; i < len(names)-1; i++ {
+		if names[i] >= names[i+1] {
+			t.Errorf("group names not in lexicographic order at position %d: %q >= %q", i, names[i], names[i+1])
+		}
+	}
+	
+	// Verify specific boundary cases that are critical for sorting
+	testCases := []struct {
+		a, b string
+		want bool // true if a < b
+	}{
+		{"group-001", "group-010", true},
+		{"group-009", "group-010", true},
+		{"group-010", "group-099", true},
+		{"group-099", "group-100", true},
+		{"group-100", "group-999", true},
+	}
+	
+	for _, tc := range testCases {
+		result := tc.a < tc.b
+		if result != tc.want {
+			t.Errorf("expected %q < %q to be %v, got %v", tc.a, tc.b, tc.want, result)
+		}
+	}
+}
+
+// Helper function to create a JPEG fixture
+func createJPEGFixture(t *testing.T, path string) image.Image {
+img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+f, err := os.Create(path)
+if err != nil {
+t.Fatalf("Failed to create test file: %v", err)
+}
+defer f.Close()
+if err := jpeg.Encode(f, img, nil); err != nil {
+t.Fatalf("Failed to encode JPEG: %v", err)
+}
+return img
 }

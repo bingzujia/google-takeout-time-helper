@@ -163,6 +163,11 @@ func runFixNameFiles(mediaFiles []string, opts fixNameRunOptions) (processed, fa
 					// receives the wall-clock value in the user's timezone.
 					if isPXLFile(filePath) {
 						nameTime = nameTime.In(time.Local)
+					} else if parser.IsUnixTimestampFormat(nameTime) {
+						// Unix timestamp formats (mmexport, album_temp) represent local time
+						// as Unix seconds, so they're already in UTC internally. Convert to
+						// the system's local timezone for the same reason as PXL.
+						nameTime = nameTime.In(time.Local)
 					}
 
 					if opts.DryRun {

@@ -2,18 +2,17 @@ package heicconv
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 )
 
-// heifEncQuality is the quality factor passed to heif-enc (0–100; higher = better quality / larger file).
-// 35 provides a significant file-size reduction over the previous 80 while remaining perceptually
-// acceptable for photo archives. Lossless (-L) is intentionally excluded; it defeats the
-// compression goal and is never passed to heif-enc.
-const heifEncQuality = 35
+// heifEncQuality is the default quality factor passed to heif-enc (0–100; higher = better quality / larger file).
+// 75 balances perceptual fidelity with file-size reduction and is appropriate for both photos and
+// text-heavy screenshots. Users can override this via the --quality CLI flag.
+// Lossless (-L) is intentionally excluded; it defeats the compression goal and is never passed to heif-enc.
+const heifEncQuality = 75
 
 // normalEncodeTimeout is the context deadline for a single non-oversized HEIC encode.
 const normalEncodeTimeout = 5 * time.Minute
@@ -81,7 +80,11 @@ func (heifEncEncoder) Encode(srcPath, dstPath string, opts EncodeOptions) error 
 //
 // Note: -L (lossless) is intentionally never included; it defeats the compression goal.
 func buildHeifEncArgs(srcPath, dstPath string, opts EncodeOptions) []string {
-	args := []string{"-q", fmt.Sprintf("%d", heifEncQuality)}
+	q := heifEncQuality
+	if opts.Quality > 0 {
+		q = opts.Quality
+	}
+	args := []string{"-q", fmt.Sprintf("%d", q)}
 	if opts.ChromaSubsampling != "" {
 		args = append(args, "-p", "chroma="+opts.ChromaSubsampling)
 	}
@@ -92,40 +95,12 @@ func buildHeifEncArgs(srcPath, dstPath string, opts EncodeOptions) []string {
 // detectChromaSubsampling returns the chroma subsampling value for srcPath.
 // For JPEG sources it first checks chromaMap (pre-queried batch result), then falls back
 // to calling exiftool directly. Non-JPEG formats and any parse failure fall back to "420".
-func detectChromaSubsampling(srcPath, format string, chromaMap map[string]string) string {
-	if format != "jpeg" {
-		return "420"
-	}
-	if chromaMap != nil {
-		if v, ok := chromaMap[srcPath]; ok {
-			return parseChromaSubsampling(`[{"YCbCrSubSampling":"` + v + `"}]`)
-		}
-	}
-	out, err := exec.Command("exiftool", "-j", "-YCbCrSubSampling", srcPath).Output()
-	if err != nil {
-		return "420"
-	}
-	return parseChromaSubsampling(string(out))
-}
-
-// parseChromaSubsampling extracts a chroma subsampling value ("420", "422", "444")
-// from the JSON output of `exiftool -j -YCbCrSubSampling`. Defaults to "420".
-func parseChromaSubsampling(exiftoolJSON string) string {
-	var records []map[string]interface{}
-	if err := json.Unmarshal([]byte(exiftoolJSON), &records); err != nil || len(records) == 0 {
-		return "420"
-	}
-	raw, ok := records[0]["YCbCrSubSampling"]
-	if !ok {
-		return "420"
-	}
-	val := strings.ToLower(fmt.Sprintf("%v", raw))
-	switch {
-	case strings.Contains(val, "4:4:4"):
-		return "444"
-	case strings.Contains(val, "4:2:2"):
-		return "422"
-	default:
-		return "420"
-	}
+//
+// NOTE: Always returns "420" regardless of source. HEIC files branded as "heic" must use
+// HEVC Main or Main Still Picture profile, both of which require YCbCr 4:2:0. Passing
+// chroma=444 causes heif-enc/x265 to select HEVC Range Extensions profile (profile_idc=4),
+// which is incompatible with the "heic" brand — every major platform decoder (Apple
+// ImageIO, Android MediaCodec, Windows HEVC codec) rejects such files as corrupt.
+func detectChromaSubsampling() string {
+	return "420"
 }

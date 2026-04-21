@@ -30,6 +30,24 @@ type Result struct {
 // burstRe matches filenames like 20190207_184125_007.jpg
 var burstRe = regexp.MustCompile(`^(\d{8}_\d{6})_(\d{3})\.(\w+)$`)
 
+// Screenshot timestamp format regexes (6 formats)
+var (
+	// Format 1: YYYY-MM-DD-HH-MM-SS-MS (e.g., "Screenshot_2025-07-18-09-23-54-65.png")
+	screenshotTimestampRe1 = regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})`)
+	// Format 2: YYYYMMDD_HHMMSS (e.g., "screenshot20250718_092354.jpg")
+	screenshotTimestampRe2 = regexp.MustCompile(`(\d{8})_(\d{6})`)
+	// Format 3: YYYY-MM-DD_HH-MM-SS (e.g., "Screenshot_2025-07-18_09-23-54.png")
+	screenshotTimestampRe3 = regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})`)
+	// Format 4: YYYY_M_D_H_M_S with auto zero-padding (e.g., "screenshot_2025_7_18_9_23_54.png")
+	screenshotTimestampRe4 = regexp.MustCompile(`(\d{4})_(\d{1,2})_(\d{1,2})_(\d{1,2})_(\d{1,2})_(\d{1,2})`)
+	// Format 5: YYYY-MM-DD (date only, e.g., "screenshot_2025-07-18.png")
+	screenshotTimestampRe5 = regexp.MustCompile(`(\d{4})-(\d{2})-(\d{2})(?:[^0-9]|$)`)
+	// Format 6a: Unix timestamp seconds (10 digits, e.g., "screenshot1634560000.jpg")
+	screenshotTimestampRe6a = regexp.MustCompile(`(\d{10})(?:\.|$)`)
+	// Format 6b: Unix timestamp milliseconds (13 digits, e.g., "mmscreenshot1727421404387.jpg")
+	screenshotTimestampRe6b = regexp.MustCompile(`(\d{13})(?:\.|$)`)
+)
+
 type burstFile struct {
 	name string
 	seq  string
@@ -147,6 +165,159 @@ func stem(name string) string {
 	return name[:len(name)-len(filepath.Ext(name))]
 }
 
+// detectScreenshots scans entries for screenshot files and returns a map
+// of screenshot filenames keyed by their names for quick lookup.
+// Files whose names (case-insensitive) contain "screenshot" are included.
+// This includes variations like "mmscreenshot", "wxscreenshot", "screenshot", etc.
+// Unlike other file types, screenshot detection does not require a valid image extension.
+func detectScreenshots(entries []os.DirEntry) map[string]bool {
+	screenshots := make(map[string]bool)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		lowerName := strings.ToLower(name)
+		// Match any file that contains "screenshot" (includes variations like mmscreenshot, wxscreenshot, etc.)
+		if strings.Contains(lowerName, "screenshot") {
+			screenshots[name] = true
+		}
+	}
+	return screenshots
+}
+
+// parseScreenshotTimestamp extracts the timestamp from a screenshot filename.
+// It tries 6 formats in order and returns (time, ok) where ok indicates if the
+// timestamp is complete (all time components present). For Format 5 (date-only),
+// ok=false to indicate a partial timestamp that may need ModTime fallback.
+//
+// Supported formats:
+// 1. YYYY-MM-DD-HH-MM-SS-MS (e.g., "Screenshot_2025-07-18-09-23-54-65.png")
+// 2. YYYYMMDD_HHMMSS (e.g., "screenshot20250718_092354.jpg")
+// 3. YYYY-MM-DD_HH-MM-SS (e.g., "Screenshot_2025-07-18_09-23-54.png")
+// 4. YYYY_M_D_H_M_S (e.g., "screenshot_2025_7_18_9_23_54.png")
+// 5. YYYY-MM-DD (e.g., "screenshot_2025-07-18.png")
+// 6a. Unix timestamp seconds (e.g., "screenshot1634560000.jpg")
+// 6b. Unix timestamp milliseconds (e.g., "mmscreenshot1727421404387.jpg")
+func parseScreenshotTimestamp(filename string) (time.Time, bool) {
+	// Format 1: YYYY-MM-DD-HH-MM-SS-MS
+	if m := screenshotTimestampRe1.FindStringSubmatch(filename); m != nil {
+		year := atoi(m[1])
+		month := atoi(m[2])
+		day := atoi(m[3])
+		hour := atoi(m[4])
+		min := atoi(m[5])
+		sec := atoi(m[6])
+		ms := atoi(m[7])
+		t := time.Date(year, time.Month(month), day, hour, min, sec, ms*10_000_000, time.UTC)
+		return t, true
+	}
+
+	// Format 2: YYYYMMDD_HHMMSS
+	if m := screenshotTimestampRe2.FindStringSubmatch(filename); m != nil {
+		dateStr := m[1]
+		timeStr := m[2]
+		year := atoi(dateStr[:4])
+		month := atoi(dateStr[4:6])
+		day := atoi(dateStr[6:8])
+		hour := atoi(timeStr[:2])
+		min := atoi(timeStr[2:4])
+		sec := atoi(timeStr[4:6])
+		t := time.Date(year, time.Month(month), day, hour, min, sec, 0, time.UTC)
+		return t, true
+	}
+
+	// Format 3: YYYY-MM-DD_HH-MM-SS
+	if m := screenshotTimestampRe3.FindStringSubmatch(filename); m != nil {
+		year := atoi(m[1])
+		month := atoi(m[2])
+		day := atoi(m[3])
+		hour := atoi(m[4])
+		min := atoi(m[5])
+		sec := atoi(m[6])
+		t := time.Date(year, time.Month(month), day, hour, min, sec, 0, time.UTC)
+		return t, true
+	}
+
+	// Format 4: YYYY_M_D_H_M_S (auto zero-padding)
+	if m := screenshotTimestampRe4.FindStringSubmatch(filename); m != nil {
+		year := atoi(m[1])
+		month := atoi(m[2])
+		day := atoi(m[3])
+		hour := atoi(m[4])
+		min := atoi(m[5])
+		sec := atoi(m[6])
+		t := time.Date(year, time.Month(month), day, hour, min, sec, 0, time.UTC)
+		return t, true
+	}
+
+	// Format 5: YYYY-MM-DD (date only, incomplete)
+	if m := screenshotTimestampRe5.FindStringSubmatch(filename); m != nil {
+		year := atoi(m[1])
+		month := atoi(m[2])
+		day := atoi(m[3])
+		t := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+		return t, false // incomplete: ok=false
+	}
+
+	// Format 6b: Unix timestamp milliseconds (13 digits, e.g., "mmscreenshot1727421404387.jpg")
+	if m := screenshotTimestampRe6b.FindStringSubmatch(filename); m != nil {
+		timestampMs := atoi64(m[1])
+		unixSec := timestampMs / 1000
+		nanoFrac := (timestampMs % 1000) * 1_000_000
+		t := time.Unix(unixSec, nanoFrac).UTC()
+		return t, true
+	}
+
+	// Format 6a: Unix timestamp seconds (10 digits, e.g., "screenshot1634560000.jpg")
+	if m := screenshotTimestampRe6a.FindStringSubmatch(filename); m != nil {
+		unixSec := int64(atoi(m[1]))
+		t := time.Unix(unixSec, 0).UTC()
+		return t, true
+	}
+
+	return time.Time{}, false
+}
+
+// buildScreenshotName generates the target filename for a screenshot.
+// Format: Screenshot_YYYY-MM-DD-HH-MM-SS-MS.{ext}
+// The millisecond component (MS) is derived from the nanosecond value: ns / 10_000_000
+// (which yields a value 0-99 representing hundredths and tenths of a second).
+func buildScreenshotName(ext string, t time.Time) string {
+	ext = strings.ToLower(ext)
+	date := t.Format("2006-01-02")
+	timeStr := t.Format("15-04-05")
+	ms := t.Nanosecond() / 10_000_000
+	if ms > 99 {
+		ms = 99 // clamp to 99
+	}
+	return fmt.Sprintf("Screenshot_%s-%s-%02d.%s", date, timeStr, ms, ext)
+}
+
+// atoi is a helper to convert a string to int (used by timestamp parsing).
+func atoi(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+// atoi64 is a helper to convert a string to int64 (used for Unix timestamp parsing).
+func atoi64(s string) int64 {
+	var n int64
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int64(c-'0')
+	}
+	return n
+}
+
 // doRename performs (or previews) a single rename operation.
 func doRename(dir, oldName, newName string, dryRun bool) error {
 	if dryRun {
@@ -172,6 +343,7 @@ func Run(cfg Config) (Result, error) {
 
 	burstGroups := detectBurstGroups(entries)
 	mp4Pairs := detectMp4Pairs(entries)
+	screenshotNames := detectScreenshots(entries)
 
 	// Build skip sets used in Phase 2b.
 	burstNames := make(map[string]bool)
@@ -239,6 +411,72 @@ func Run(cfg Config) (Result, error) {
 
 		extWithDot := filepath.Ext(name)
 		ext := strings.ToLower(strings.TrimPrefix(extWithDot, "."))
+
+		// Screenshot handling (Phase 2b)
+		if screenshotNames[name] {
+			// Parse screenshot timestamp from filename, fallback to ModTime
+			t, ok := parseScreenshotTimestamp(name)
+			if !ok {
+				// Incomplete timestamp (e.g., date only), use ModTime for time portion
+				info, err := e.Info()
+				if err != nil {
+					result.Errors++
+					cfg.Logger.Fail("stat", filepath.Join(cfg.Dir, name), err.Error())
+					continue
+				}
+				modTime := info.ModTime()
+				t = time.Date(t.Year(), t.Month(), t.Day(), modTime.Hour(), modTime.Minute(), modTime.Second(), modTime.Nanosecond(), time.UTC)
+			}
+
+			ideal := buildScreenshotName(ext, t)
+
+			// Already has the ideal name → skip
+			if ideal == name {
+				result.Skipped++
+				cfg.Logger.Skip("already-named", filepath.Join(cfg.Dir, name))
+				continue
+			}
+
+			newName := nonConflictName(cfg.Dir, stem(ideal), ext)
+			if newName == "" {
+				result.Errors++
+				cfg.Logger.Fail("rename", filepath.Join(cfg.Dir, name), "no non-conflict name found")
+				continue
+			}
+			if newName == name {
+				result.Skipped++
+				cfg.Logger.Skip("already-named", filepath.Join(cfg.Dir, name))
+				continue
+			}
+
+			if err := doRename(cfg.Dir, name, newName, cfg.DryRun); err != nil {
+				result.Errors++
+				cfg.Logger.Fail("rename", filepath.Join(cfg.Dir, name), err.Error())
+				continue
+			}
+			cfg.Logger.Info("renamed", filepath.Join(cfg.Dir, name))
+			result.Renamed++
+
+			// Rename the paired MP4 companion if it exists
+			if mp4Name, ok := mp4Pairs[stem(name)]; ok {
+				newMp4 := nonConflictName(cfg.Dir, stem(newName), "mp4")
+				if newMp4 == "" {
+					result.Errors++
+					cfg.Logger.Fail("rename", filepath.Join(cfg.Dir, mp4Name), "no non-conflict name found")
+					continue
+				}
+				if err := doRename(cfg.Dir, mp4Name, newMp4, cfg.DryRun); err != nil {
+					result.Errors++
+					cfg.Logger.Fail("rename", filepath.Join(cfg.Dir, mp4Name), err.Error())
+				} else {
+					cfg.Logger.Info("renamed", filepath.Join(cfg.Dir, mp4Name))
+					result.Renamed++
+				}
+			}
+
+			continue // Skip IMG/VID logic for screenshots
+		}
+
 		if !mediatype.IsImage(ext) && !mediatype.IsVideo(ext) {
 			continue
 		}

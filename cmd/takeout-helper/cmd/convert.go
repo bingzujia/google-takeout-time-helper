@@ -24,10 +24,15 @@ Requires:
   - exiftool
 
 HEIC encoding quality:
-  - heif-enc: quality 35 (0–100 scale)
+  - Default: 75 (0–100 scale; higher = better quality / larger file)
+  - Override with --quality (e.g. --quality 50 for smaller files)
 
 Images larger than 40 million pixels are detected as oversized and
-are processed one at a time to reduce peak memory usage.`,
+are processed one at a time to reduce peak memory usage.
+
+Images with any dimension exceeding 16383 px are skipped: HEIC files
+that tall/wide are rejected as undecodable by Apple ImageIO and most
+hardware HEVC decoders on Android and Windows.`,
 	Args: cobra.NoArgs,
 	RunE: runConvert,
 }
@@ -36,12 +41,14 @@ var (
 	convertDryRun   bool
 	convertWorkers  int
 	convertInputDir string
+	convertQuality  int
 )
 
 func init() {
 	convertCmd.Flags().BoolVar(&convertDryRun, "dry-run", false, "preview HEIC conversions without modifying files")
 	convertCmd.Flags().IntVar(&convertWorkers, "workers", 2, "number of concurrent conversion workers (1–N; reduce to limit memory)")
 	convertCmd.Flags().StringVar(&convertInputDir, "input-dir", "", "input directory containing images to convert")
+	convertCmd.Flags().IntVar(&convertQuality, "quality", 75, "HEIC encoding quality (1–100; higher = better quality / larger file)")
 	_ = convertCmd.MarkFlagRequired("input-dir")
 	rootCmd.AddCommand(convertCmd)
 }
@@ -84,6 +91,7 @@ func runConvert(_ *cobra.Command, _ []string) error {
 		DryRun:       convertDryRun,
 		ShowProgress: true,
 		Workers:      convertWorkers,
+		Quality:      convertQuality,
 		Logger:       logger,
 	})
 	if err != nil {
@@ -106,6 +114,7 @@ func runConvert(_ *cobra.Command, _ []string) error {
 	fmt.Printf("  Skipped (conflict):   %d\n", stats.SkippedConflicts)
 	fmt.Printf("  Skipped (already HEIC): %d\n", stats.SkippedAlreadyHEIC)
 	fmt.Printf("  Skipped (unsupported): %d\n", stats.SkippedUnsupported)
+	fmt.Printf("  Skipped (too large):  %d\n", stats.SkippedOversizeDim)
 	fmt.Printf("  Failed:               %d\n", stats.Failed)
 	if !convertDryRun {
 		fmt.Printf("  Log:                  %s\n", logger.Path())
