@@ -16,6 +16,7 @@ import (
 	"github.com/bingzujia/google-takeout-time-helper/internal/organizer"
 	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
 	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
+	"github.com/gabriel-vasile/mimetype"
 )
 
 // gpsCoords holds simple GPS coordinate data from JSON sources only.
@@ -39,6 +40,78 @@ func isVideo(ext string) bool {
 	mimeType := mime.TypeByExtension(ext)
 	return mimeType != "" && strings.HasPrefix(mimeType, "video/")
 }
+
+// mimeToExt maps MIME types to file extensions.
+func mimeToExt(mimeType string) string {
+	switch {
+	case mimeType == "image/jpeg":
+		return ".jpg"
+	case mimeType == "image/png":
+		return ".png"
+	case mimeType == "image/gif":
+		return ".gif"
+	case mimeType == "image/webp":
+		return ".webp"
+	case mimeType == "image/tiff":
+		return ".tiff"
+	case mimeType == "image/bmp":
+		return ".bmp"
+	case mimeType == "image/heic" || mimeType == "image/heif":
+		return ".heic"
+	case mimeType == "video/mp4":
+		return ".mp4"
+	case mimeType == "video/quicktime":
+		return ".mov"
+	case mimeType == "video/x-msvideo":
+		return ".avi"
+	case mimeType == "video/x-matroska":
+		return ".mkv"
+	case mimeType == "video/x-ms-wmv":
+		return ".wmv"
+	case mimeType == "video/x-flv":
+		return ".flv"
+	case mimeType == "video/3gpp":
+		return ".3gp"
+	case mimeType == "video/x-ms-asf":
+		return ".asf"
+	case mimeType == "video/mpeg":
+		return ".mpg"
+	default:
+		return ""
+	}
+}
+
+// isWriteSupported checks if exiftool can write EXIF metadata to the given file format.
+// Returns true if the format is supported, or true by default if detection fails (optimistic fallback).
+func isWriteSupported(filePath string) bool {
+	m, err := mimetype.DetectFile(filePath)
+	if err != nil {
+		return true // assume supported if we can't detect
+	}
+	
+	mimeType := m.String()
+	// WebP, WMV, and ASF formats do not support EXIF writing
+	return mimeType != "image/webp" && mimeType != "video/x-ms-wmv" && mimeType != "video/x-ms-asf"
+}
+
+// detectFileType detects the actual MIME type of a file and returns the correct extension
+// if it doesn't match the current extension. Returns empty string if no rename is needed.
+func detectFileType(filePath string) (string, error) {
+	m, err := mimetype.DetectFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	
+	mimeType := m.String()
+	currentExt := strings.ToLower(filepath.Ext(filePath))
+	targetExt := mimeToExt(mimeType)
+	
+	if targetExt != "" && targetExt != currentExt {
+		return targetExt, nil
+	}
+	return "", nil
+}
+
 
 // Stats holds processing statistics.
 type Stats struct {
