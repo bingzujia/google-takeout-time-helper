@@ -704,6 +704,31 @@ Timestamp and GPS are resolved in priority order:
 
 **Design principle:** EXIF is most reliable; filename is fallback for missing EXIF; JSON is last resort.
 
+### Separate EXIF Timestamp Sources
+
+The migrate command writes **CreateDate** and **FileModifyDate** from separate JSON fields to better represent photo metadata:
+
+**CreateDate (when photo was taken):**
+- Priority 1: JSON `photoTakenTime` 
+- Fallback: Move to manual_review if missing
+
+**FileModifyDate (when added to Google Photos):**
+- Priority 1: JSON `creationTime`
+- Priority 2: JSON `photoTakenTime` (fallback)
+- Fallback: Move to manual_review if both missing
+
+**DateTimeOriginal:** Never modified by migrate (preserved from existing EXIF).
+
+**Timezone Conversion:** Unix timestamps from JSON (UTC) are automatically converted to local system timezone before writing to EXIF using `time.Unix()`.
+
+**Metadata Tracking:** The metadata JSON includes `create_date.source` and `file_modify_date.source` fields for traceability:
+- `"photoTakenTime"` - Used JSON photoTakenTime
+- `"creationTime"` - Used JSON creationTime
+- `"photoTakenTime_fallback"` - Used JSON photoTakenTime as fallback for FileModifyDate
+- `"manual_review"` - File moved to manual_review due to missing timestamps
+
+**Implementation:** See `ResolvePhotoTimestamp()` and `ResolveModifyTimestamp()` in `internal/migrator/migrator.go` for priority logic.
+
 ### Logging Location
 
 Logs always go to `takeout-helper-log/` under the working directory:

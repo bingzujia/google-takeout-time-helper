@@ -189,15 +189,20 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 		}
 	}
 
-	// Step 3b: Extract JSON timestamp and GPS
+	// Step 3b: Extract JSON timestamps and GPS
 	jsonTimestamp := time.Time{}
-	jsonTimeOk := false
 	var jsonGPS parser.GPSInfo
 	jsonGPSOk := false
+	photoTakenTs := int64(0)
+	fileModifyTs := int64(0)
+	photoTsSource := ""
+	modifyTsSource := ""
+	shouldMovePhotoTs := false
+	shouldMoveModifyTs := false
+
 	if jsonResult != nil {
 		if !jsonResult.Timestamp.IsZero() {
 			jsonTimestamp = jsonResult.Timestamp
-			jsonTimeOk = true
 		}
 		if jsonResult.Lat != 0 || jsonResult.Lon != 0 {
 			jsonGPS = parser.GPSInfo{
@@ -208,14 +213,38 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 			}
 			jsonGPSOk = true
 		}
+		// Resolve separate timestamps for CreateDate and FileModifyDate
+		photoTakenTs, photoTsSource, shouldMovePhotoTs = ResolvePhotoTimestamp(jsonResult)
+		fileModifyTs, modifyTsSource, shouldMoveModifyTs = ResolveModifyTimestamp(jsonResult)
+	} else {
+		// No JSON sidecar — both timestamps require manual review
+		photoTsSource = "manual_review"
+		modifyTsSource = "manual_review"
+		shouldMovePhotoTs = true
+		shouldMoveModifyTs = true
 	}
 
 	// Step 3c: Extract EXIF GPS to determine if JSON GPS supplement is needed
 	exifGPS := parser.ParseEXIFGPS(entry.Path)
 	exifGPSOk := exifGPS.Has
 
+	// Check if we should move to manual_review due to missing timestamps
+	bothTimestampsMissing := shouldMovePhotoTs && shouldMoveModifyTs
+	hasTimestamp := photoTakenTs != 0 || fileModifyTs != 0
+
 	// willWriteExif is true when we'll actually invoke exiftool on the output file
-	willWriteExif := jsonTimeOk || (!exifGPSOk && jsonGPSOk)
+	willWriteExif := hasTimestamp || (!exifGPSOk && jsonGPSOk)
+
+	// If both timestamps are missing and no GPS to write, move to manual review
+	if bothTimestampsMissing && (!exifGPSOk && !jsonGPSOk) {
+		statsMu.Lock()
+		stats.ManualReview++
+		statsMu.Unlock()
+		logger.Info("missing_timestamps", entry.RelPath)
+		moveToManualReview(entry, outputDir, manualReviewDir, jsonResult, jsonTimestamp,
+			exifGPS, exifGPSOk, jsonGPS, jsonGPSOk, deviceFolder, deviceType, "missing_timestamps")
+		return
+	}
 
 	// Step 3d: If we'd need to write EXIF, check format support early (before copy)
 	if willWriteExif && !IsWriteSupported(entry.Path) {
@@ -249,7 +278,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	// Step 3f: No EXIF writes needed — write metadata directly and return
 	if !willWriteExif {
 		finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
-		meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "")
+		meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "", photoTsSource, modifyTsSource)
 		meta.SHA256 = copySHA256
 		if err := WriteMetadata(metadataDir, meta); err != nil {
 			statsMu.Lock()
@@ -271,10 +300,11 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 		return
 	}
 
-	// Step 3h: Write CreateDate+ModifyDate from JSON timestamp (not DateTimeOriginal)
+	// Step 3h: Write CreateDate+ModifyDate from separate JSON timestamps (not DateTimeOriginal)
+	// Using WriteSeparateTimestamps to handle photoTakenTime → CreateDate, creationTime → FileModifyDate
 	var exifWriteErr error
-	if jsonTimeOk {
-		exifWriteErr = exifWriter.WriteCreateAndModifyDate(exifPath, jsonTimestamp)
+	if hasTimestamp {
+		exifWriteErr = exifWriter.WriteSeparateTimestamps(exifPath, photoTakenTs, fileModifyTs)
 	}
 	// Supplement GPS from JSON when EXIF GPS is missing
 	if exifWriteErr == nil && !exifGPSOk && jsonGPSOk {
@@ -328,7 +358,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 
 	// Step 3j: Write metadata JSON
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
-	meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "")
+	meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "", photoTsSource, modifyTsSource)
 	meta.SHA256 = finalSHA256
 	if err := WriteMetadata(metadataDir, meta); err != nil {
 		statsMu.Lock()
@@ -474,6 +504,35 @@ func resolveGPS(exifGPS parser.GPSInfo, exifGPSOk bool, jsonGPS parser.GPSInfo, 
 	return parser.GPSInfo{}, "none"
 }
 
+// ResolvePhotoTimestamp returns the Unix timestamp for CreateDate field from JSON.
+// Priority: photoTakenTime → fallback to manual_review
+// Returns (timestamp, source, shouldMoveToManualReview)
+func ResolvePhotoTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string, bool) {
+	if jsonResult == nil {
+		return 0, "manual_review", true
+	}
+	if jsonResult.PhotoTakenTimeUnix != 0 {
+		return jsonResult.PhotoTakenTimeUnix, "photoTakenTime", false
+	}
+	return 0, "manual_review", true
+}
+
+// ResolveModifyTimestamp returns the Unix timestamp for FileModifyDate field from JSON.
+// Priority: creationTime → photoTakenTime fallback → manual_review
+// Returns (timestamp, source, shouldMoveToManualReview)
+func ResolveModifyTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string, bool) {
+	if jsonResult == nil {
+		return 0, "manual_review", true
+	}
+	if jsonResult.CreationTimeUnix != 0 {
+		return jsonResult.CreationTimeUnix, "creationTime", false
+	}
+	if jsonResult.PhotoTakenTimeUnix != 0 {
+		return jsonResult.PhotoTakenTimeUnix, "photoTakenTime_fallback", false
+	}
+	return 0, "manual_review", true
+}
+
 // moveToManualReview copies a file (not yet in output) to the manual_review directory
 // with its own metadata JSON for later manual handling.
 func moveToManualReview(entry FileEntry, outputDir, manualReviewDir string,
@@ -503,7 +562,7 @@ func moveToManualReview(entry FileEntry, outputDir, manualReviewDir string,
 	// Write metadata JSON to manual_review/metadata/
 	manualMetaDir := filepath.Join(manualReviewDir, "metadata")
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
-	meta := buildMetadata(entry.RelPath, filepath.Base(entry.Path), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason)
+	meta := buildMetadata(entry.RelPath, filepath.Base(entry.Path), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason, "manual_review", "manual_review")
 	sha256, err := HashFile(dstReview)
 	if err == nil {
 		meta.SHA256 = sha256
@@ -544,7 +603,7 @@ func moveToManualReviewByPath(srcPath, relPath, outputDir, manualReviewDir strin
 	// Write metadata JSON to manual_review/metadata/
 	manualMetaDir := filepath.Join(manualReviewDir, "metadata")
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
-	meta := buildMetadata(relPath, filepath.Base(srcPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason)
+	meta := buildMetadata(relPath, filepath.Base(srcPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, reviewReason, "manual_review", "manual_review")
 	sha256, err := HashFile(dstReview)
 	if err == nil {
 		meta.SHA256 = sha256
@@ -556,7 +615,8 @@ func moveToManualReviewByPath(srcPath, relPath, outputDir, manualReviewDir strin
 func buildMetadata(relPath, outputFilename string,
 	jsonTimestamp time.Time,
 	finalGPS parser.GPSInfo, gpsSource string,
-	deviceFolder, deviceType, reviewReason string) *Metadata {
+	deviceFolder, deviceType, reviewReason string,
+	createDateSource, fileModifyDateSource string) *Metadata {
 
 	timestampSource := "none"
 	jsonTS := ""
@@ -576,6 +636,14 @@ func buildMetadata(relPath, outputFilename string,
 		DeviceFolder: deviceFolder,
 		DeviceType:   deviceType,
 		ReviewReason: reviewReason,
+	}
+
+	// Add separate timestamp source tracking
+	if createDateSource != "" {
+		meta.CreateDate = &TSSource{Source: createDateSource}
+	}
+	if fileModifyDateSource != "" {
+		meta.FileModifyDate = &TSSource{Source: fileModifyDateSource}
 	}
 
 	if finalGPS.Has {

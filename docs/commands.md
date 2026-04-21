@@ -25,9 +25,13 @@ This document provides complete reference for all `takeout-helper` commands, inc
 **What it does:**
 - Scans year folders (`Photos from XXXX`) in input directory
 - Copies files to output directory
-- Restores metadata from JSON sidecars to EXIF tags using exiftool
-- Generates SHA-256-based metadata JSON files
+- Restores metadata from JSON sidecars to EXIF tags using exiftool:
+  - **CreateDate**: Synchronized from JSON `photoTakenTime` (when photo was taken)
+  - **FileModifyDate**: Synchronized from JSON `creationTime` (when added to Google Photos), with fallback to `photoTakenTime`
+  - **DateTimeOriginal**: Left untouched to preserve original EXIF values
+- Generates SHA-256-based metadata JSON files with timestamp source tracking
 - Creates log file with per-file decisions
+- Moves files with missing timestamps to `manual_review` directory for human review
 
 ### Flags
 
@@ -56,14 +60,31 @@ takeout-helper migrate --input-dir ~/Takeout --output-dir ~/Photos --year 2023
 
 - Organized photo files in output directory with metadata restored
 - `takeout-helper-log/migrate-YYYYMMDD-NNN.log` with processing summary (Processed, Skipped, Failed counts)
-- `.metadata.json` files tracking metadata sources (JSON sidecar, EXIF, filename)
+- `.metadata.json` files tracking metadata sources:
+  - `timestamp`: Overall timestamp info (for backward compatibility)
+  - `create_date.source`: Source of CreateDate (e.g., "photoTakenTime")
+  - `file_modify_date.source`: Source of FileModifyDate (e.g., "creationTime", "photoTakenTime_fallback")
+- `manual_review/` directory containing photos with missing timestamp data for manual handling
+
+### Timestamp Handling
+
+The migrate command uses two distinct timestamps from JSON sidecars:
+
+| EXIF Field | JSON Source | Fallback | Manual Review |
+|---|---|---|---|
+| **CreateDate** | `photoTakenTime` | — | If missing |
+| **FileModifyDate** | `creationTime` | `photoTakenTime` | If both missing |
+
+Timestamps are converted from UTC (as stored in JSON) to local system timezone before writing to EXIF.
 
 ### Notes
 
-- Files without a JSON sidecar are copied as-is (counted as Processed, not Failed)
+- Files without a JSON sidecar are moved to `manual_review` (not silently processed)
+- Files with missing both timestamps are moved to `manual_review` for human decision
 - GPS metadata is supplemented from JSON when absent from EXIF
 - Requires exiftool for metadata writes (gracefully degrades if absent)
 - exiftool is optional; files are still copied without it
+- Metadata JSON includes source attribution for traceability
 
 ---
 

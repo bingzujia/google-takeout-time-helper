@@ -1,12 +1,13 @@
 package migrator
 
 import (
-"os"
-"path/filepath"
-"testing"
-"time"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
 
-"github.com/bingzujia/google-takeout-time-helper/internal/parser"
+	"github.com/bingzujia/google-takeout-time-helper/internal/matcher"
+	"github.com/bingzujia/google-takeout-time-helper/internal/parser"
 )
 
 // TestMoveToManualReview_SHA256Assignment_Success tests SHA256 calculation success in moveToManualReview
@@ -205,5 +206,121 @@ if err == nil && len(entries) > 0 {
 filename := entries[0].Name()
 // Both ".json" (error case) and valid hash are acceptable in error scenario
 t.Logf("metadata file created: %s", filename)
+}
+}
+
+// TestResolvePhotoTimestamp tests the timestamp resolver for CreateDate
+func TestResolvePhotoTimestamp(t *testing.T) {
+tests := []struct {
+name           string
+jsonResult     *matcher.JSONLookupResult
+expectTs       int64
+expectSource   string
+expectNeedMove bool
+}{
+{
+name: "photoTakenTime present",
+jsonResult: &matcher.JSONLookupResult{
+PhotoTakenTimeUnix: 1683012040,
+},
+expectTs:       1683012040,
+expectSource:   "photoTakenTime",
+expectNeedMove: false,
+},
+{
+name: "photoTakenTime missing",
+jsonResult: &matcher.JSONLookupResult{
+PhotoTakenTimeUnix: 0,
+},
+expectTs:       0,
+expectSource:   "manual_review",
+expectNeedMove: true,
+},
+{
+name: "no JSON result",
+jsonResult: nil,
+expectTs:       0,
+expectSource:   "manual_review",
+expectNeedMove: true,
+},
+}
+
+for _, tc := range tests {
+t.Run(tc.name, func(t *testing.T) {
+ts, source, needMove := ResolvePhotoTimestamp(tc.jsonResult)
+if ts != tc.expectTs {
+t.Errorf("timestamp = %d, want %d", ts, tc.expectTs)
+}
+if source != tc.expectSource {
+t.Errorf("source = %s, want %s", source, tc.expectSource)
+}
+if needMove != tc.expectNeedMove {
+t.Errorf("needMove = %v, want %v", needMove, tc.expectNeedMove)
+}
+})
+}
+}
+
+// TestResolveModifyTimestamp tests the timestamp resolver for FileModifyDate with fallback logic
+func TestResolveModifyTimestamp(t *testing.T) {
+tests := []struct {
+name           string
+jsonResult     *matcher.JSONLookupResult
+expectTs       int64
+expectSource   string
+expectNeedMove bool
+}{
+{
+name: "creationTime present",
+jsonResult: &matcher.JSONLookupResult{
+CreationTimeUnix:   1683015000,
+PhotoTakenTimeUnix: 1683012040,
+},
+expectTs:       1683015000,
+expectSource:   "creationTime",
+expectNeedMove: false,
+},
+{
+name: "creationTime missing, photoTakenTime fallback",
+jsonResult: &matcher.JSONLookupResult{
+CreationTimeUnix:   0,
+PhotoTakenTimeUnix: 1683012040,
+},
+expectTs:       1683012040,
+expectSource:   "photoTakenTime_fallback",
+expectNeedMove: false,
+},
+{
+name: "both timestamps missing",
+jsonResult: &matcher.JSONLookupResult{
+CreationTimeUnix:   0,
+PhotoTakenTimeUnix: 0,
+},
+expectTs:       0,
+expectSource:   "manual_review",
+expectNeedMove: true,
+},
+{
+name: "no JSON result",
+jsonResult: nil,
+expectTs:       0,
+expectSource:   "manual_review",
+expectNeedMove: true,
+},
+}
+
+for _, tc := range tests {
+t.Run(tc.name, func(t *testing.T) {
+ts, source, needMove := ResolveModifyTimestamp(tc.jsonResult)
+if ts != tc.expectTs {
+t.Errorf("timestamp = %d, want %d", ts, tc.expectTs)
+}
+if source != tc.expectSource {
+t.Errorf("source = %s, want %s", source, tc.expectSource)
+}
+if needMove != tc.expectNeedMove {
+t.Errorf("needMove = %v, want %v", needMove, tc.expectNeedMove)
+}
+})
 }
 }

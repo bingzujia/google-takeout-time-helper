@@ -354,3 +354,78 @@ func writeJSON(t *testing.T, dir, name, content string) {
 	t.Helper()
 	writeFile(t, dir, name, content)
 }
+
+// TestCreationTimeExtraction tests that creationTime is properly extracted from JSON sidecars
+func TestCreationTimeExtraction(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name           string
+		jsonContent    string
+		expectPhotoTs  int64
+		expectCreatTs  int64
+	}{
+		{
+			name: "both photoTakenTime and creationTime present",
+			jsonContent: `{
+				"photoTakenTime":{"timestamp":"1683012040"},
+				"creationTime":{"timestamp":"1683015000"}
+			}`,
+			expectPhotoTs: 1683012040,
+			expectCreatTs: 1683015000,
+		},
+		{
+			name: "only photoTakenTime present",
+			jsonContent: `{
+				"photoTakenTime":{"timestamp":"1683012040"}
+			}`,
+			expectPhotoTs: 1683012040,
+			expectCreatTs: 0,
+		},
+		{
+			name: "only creationTime present",
+			jsonContent: `{
+				"creationTime":{"timestamp":"1683015000"}
+			}`,
+			expectPhotoTs: 0,
+			expectCreatTs: 1683015000,
+		},
+		{
+			name:          "neither timestamp present",
+			jsonContent:   `{}`,
+			expectPhotoTs: 0,
+			expectCreatTs: 0,
+		},
+		{
+			name: "invalid photoTakenTime timestamp",
+			jsonContent: `{
+				"photoTakenTime":{"timestamp":"invalid"},
+				"creationTime":{"timestamp":"1683015000"}
+			}`,
+			expectPhotoTs: 0,
+			expectCreatTs: 1683015000,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			photoFile := "photo.jpg"
+			writeFile(t, tmpDir, photoFile, "fake image")
+			writeJSON(t, tmpDir, photoFile+".json", tc.jsonContent)
+
+			result := JSONForFile(filepath.Join(tmpDir, photoFile), &DirCache{})
+			if result == nil {
+				t.Fatal("JSONForFile returned nil")
+			}
+
+			if result.PhotoTakenTimeUnix != tc.expectPhotoTs {
+				t.Errorf("PhotoTakenTimeUnix = %d, want %d", result.PhotoTakenTimeUnix, tc.expectPhotoTs)
+			}
+
+			if result.CreationTimeUnix != tc.expectCreatTs {
+				t.Errorf("CreationTimeUnix = %d, want %d", result.CreationTimeUnix, tc.expectCreatTs)
+			}
+		})
+	}
+}
+

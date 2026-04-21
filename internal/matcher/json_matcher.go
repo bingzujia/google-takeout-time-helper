@@ -55,6 +55,9 @@ type GooglePhoto struct {
 	PhotoTakenTime struct {
 		Timestamp string `json:"timestamp"`
 	} `json:"photoTakenTime"`
+	CreationTime struct {
+		Timestamp string `json:"timestamp"`
+	} `json:"creationTime"`
 	GeoData struct {
 		Latitude  float64 `json:"latitude"`
 		Longitude float64 `json:"longitude"`
@@ -74,17 +77,19 @@ type GooglePhoto struct {
 
 // JSONLookupResult holds the result of looking up a JSON sidecar for a photo.
 type JSONLookupResult struct {
-	JSONFile        string    // path to the matched JSON file
-	Timestamp       time.Time // extracted photo taken time (zero if parsing failed)
-	Lat             float64   // latitude from geoData
-	Lon             float64   // longitude from geoData
-	Alt             float64   // altitude from geoData
-	CameraMake      string    // device manufacturer
-	CameraModel     string    // device model
-	DeviceFolder    string    // device folder name from googlePhotosOrigin.mobileUpload.deviceFolder
-	LocalFolderName string    // local folder name from googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName
-	DeviceType      string    // device type from googlePhotosOrigin.mobileUpload
-	GooglePhoto     *GooglePhoto // raw parsed JSON (for ResolveGPS caller access)
+	JSONFile            string    // path to the matched JSON file
+	Timestamp           time.Time // extracted photo taken time (zero if parsing failed)
+	PhotoTakenTimeUnix  int64     // Unix timestamp of photoTakenTime (0 if not present)
+	CreationTimeUnix    int64     // Unix timestamp of creationTime (0 if not present)
+	Lat                 float64   // latitude from geoData
+	Lon                 float64   // longitude from geoData
+	Alt                 float64   // altitude from geoData
+	CameraMake          string    // device manufacturer
+	CameraModel         string    // device model
+	DeviceFolder        string    // device folder name from googlePhotosOrigin.mobileUpload.deviceFolder
+	LocalFolderName     string    // local folder name from googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName
+	DeviceType          string    // device type from googlePhotosOrigin.mobileUpload
+	GooglePhoto         *GooglePhoto // raw parsed JSON (for ResolveGPS caller access)
 }
 
 // supplementalSuffixes lists known supplemental-metadata suffixes that Google
@@ -350,15 +355,20 @@ func parseJSONLookup(jsonPath string) *JSONLookupResult {
 		GooglePhoto:     &gp,
 	}
 
-	// Try to extract timestamp — prefer filename, fallback to JSON
-	// First, we need the photo filename. Since we don't have it here,
-	// we extract from the JSON's title field if available, or just use JSON.
-	// The caller (JSONForFile) will have the photo path; timestamp resolution
-	// is deferred to the caller who can pass the photo filename.
+	// Extract photoTakenTime timestamp
 	if gp.PhotoTakenTime.Timestamp != "" {
 		sec, err := strconv.ParseInt(gp.PhotoTakenTime.Timestamp, 10, 64)
 		if err == nil {
+			result.PhotoTakenTimeUnix = sec
 			result.Timestamp = time.Unix(sec, 0).UTC()
+		}
+	}
+
+	// Extract creationTime timestamp
+	if gp.CreationTime.Timestamp != "" {
+		sec, err := strconv.ParseInt(gp.CreationTime.Timestamp, 10, 64)
+		if err == nil {
+			result.CreationTimeUnix = sec
 		}
 	}
 

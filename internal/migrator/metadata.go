@@ -17,7 +17,14 @@ type Metadata struct {
 	GPS            *GPSInfo   `json:"gps,omitempty"`
 	DeviceFolder   string     `json:"device_folder,omitempty"`
 	DeviceType     string     `json:"device_type,omitempty"`
+	CreateDate     *TSSource  `json:"create_date,omitempty"`     // track CreateDate source separately
+	FileModifyDate *TSSource  `json:"file_modify_date,omitempty"` // track FileModifyDate source separately
 	ReviewReason   string     `json:"review_reason,omitempty"` // set when file needs manual attention
+}
+
+// TSSource tracks which JSON field was used as source for an EXIF timestamp
+type TSSource struct {
+	Source string `json:"source"` // e.g., "photoTakenTime", "creationTime", "photoTakenTime_fallback", "manual_review"
 }
 
 // TSInfo holds timestamp data from all sources.
