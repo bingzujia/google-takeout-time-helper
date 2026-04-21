@@ -3,6 +3,7 @@ package migrator
 import (
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
 	"github.com/bingzujia/google-takeout-time-helper/internal/matcher"
-	"github.com/bingzujia/google-takeout-time-helper/internal/mediatype"
 	"github.com/bingzujia/google-takeout-time-helper/internal/organizer"
 	"github.com/bingzujia/google-takeout-time-helper/internal/progress"
 	"github.com/bingzujia/google-takeout-time-helper/internal/workerpool"
@@ -24,6 +24,20 @@ type gpsCoords struct {
 	Lon float64
 	Alt float64
 	Has bool
+}
+
+// isImage reports whether the file extension indicates an image file,
+// determined by checking if the MIME type starts with "image/".
+func isImage(ext string) bool {
+	mimeType := mime.TypeByExtension(ext)
+	return mimeType != "" && strings.HasPrefix(mimeType, "image/")
+}
+
+// isVideo reports whether the file extension indicates a video file,
+// determined by checking if the MIME type starts with "video/".
+func isVideo(ext string) bool {
+	mimeType := mime.TypeByExtension(ext)
+	return mimeType != "" && strings.HasPrefix(mimeType, "video/")
 }
 
 // Stats holds processing statistics.
@@ -120,7 +134,7 @@ func scanFiles(yearFolders []string, inputDir string) ([]FileEntry, error) {
 				return nil
 			}
 			ext := strings.ToLower(filepath.Ext(path))
-			if !mediatype.IsImage(ext) && !mediatype.IsVideo(ext) {
+			if !(isImage(ext) || isVideo(ext)) {
 				return nil
 			}
 			relPath, relErr := filepath.Rel(inputDir, path)
