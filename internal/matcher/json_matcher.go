@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/bingzujia/google-takeout-time-helper/internal/parser"
 )
 
 // maxTakeoutFilenameLength is Google Takeout's filename length limit.
@@ -373,58 +371,6 @@ func parseJSONLookup(jsonPath string) *JSONLookupResult {
 	}
 
 	return result
-}
-
-// ResolveTimestamp extracts the photo taken time with a 3-tier priority:
-//  1. EXIF DateTimeOriginal tag (via exiftool)
-//  2. Parse timestamp from photo filename (via parser.ParseFilenameTimestamp)
-//  3. Parse timestamp from JSON photoTakenTime.timestamp field
-//  4. Return zero time if all fail
-func resolveTimestamp(photoPath string, gp *GooglePhoto) time.Time {
-	// Priority 1: EXIF DateTimeOriginal
-	if t, ok := parser.ParseEXIFTimestamp(photoPath); ok {
-		return t
-	}
-
-	// Priority 2: filename-based parsing
-	if t, ok := parser.ParseFilenameTimestamp(filepath.Base(photoPath)); ok {
-		return t
-	}
-
-	// Priority 3: JSON timestamp
-	if gp.PhotoTakenTime.Timestamp != "" {
-		sec, err := strconv.ParseInt(gp.PhotoTakenTime.Timestamp, 10, 64)
-		if err == nil {
-			return time.Unix(sec, 0).UTC()
-		}
-	}
-
-	// Priority 4: zero time
-	return time.Time{}
-}
-
-// ResolveGPS extracts GPS coordinates with a 2-tier priority:
-//  1. EXIF GPS tags (via exiftool)
-//  2. JSON geoData.latitude/longitude/altitude fields
-//  3. Return zero GPSInfo if both fail
-func resolveGPS(photoPath string, gp *GooglePhoto) parser.GPSInfo {
-	// Priority 1: EXIF GPS
-	if info := parser.ParseEXIFGPS(photoPath); info.Has {
-		return info
-	}
-
-	// Priority 2: JSON geoData
-	if gp.GeoData.Latitude != 0 || gp.GeoData.Longitude != 0 {
-		return parser.GPSInfo{
-			Lat: gp.GeoData.Latitude,
-			Lon: gp.GeoData.Longitude,
-			Alt: gp.GeoData.Altitude,
-			Has: true,
-		}
-	}
-
-	// Priority 3: no GPS
-	return parser.GPSInfo{}
 }
 
 // If old is not found, returns s unchanged.

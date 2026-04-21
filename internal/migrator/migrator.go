@@ -24,9 +24,8 @@ type Stats struct {
 	Scanned       int
 	Processed     int
 	SkippedExists int
-	FailedExif    int
 	FailedOther   int
-	ManualReview  int // files that couldn't have EXIF written but are otherwise valid
+	ManualReview  int // files that couldn't be processed but sidecar metadata exists
 }
 
 // Config holds migration settings.
@@ -218,7 +217,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	}
 
 	// Step 3c: Extract EXIF GPS to determine if JSON GPS supplement is needed
-	exifGPS := parser.ParseEXIFGPS(entry.Path)
+	exifGPS := parser.GPSInfo{} // EXIF parsing removed
 	exifGPSOk := exifGPS.Has
 
 	// Check if we should move to manual_review due to missing timestamps
@@ -699,7 +698,7 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 	}
 
 	// Extract EXIF GPS
-	exifGPS := parser.ParseEXIFGPS(entry.Path)
+	exifGPS := parser.GPSInfo{} // EXIF parsing removed
 	exifGPSOk := exifGPS.Has
 
 	willWriteExif := jsonTimeOk || (!exifGPSOk && jsonGPSOk)

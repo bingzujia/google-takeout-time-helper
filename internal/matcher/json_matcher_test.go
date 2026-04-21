@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // --- methodIdentity ---
@@ -301,43 +300,6 @@ func TestJSONForFile(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// --- resolveTimestamp ---
-
-func TestResolveTimestamp(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create a photo with a parseable filename
-	photoPath := filepath.Join(tmpDir, "IMG_20230302_112040.jpg")
-	writeFile(t, tmpDir, "IMG_20230302_112040.jpg", "fake content")
-
-	gp := &GooglePhoto{}
-	gp.PhotoTakenTime.Timestamp = "1683012040" // 2023-05-02 10:20:40 UTC
-
-	ts := resolveTimestamp(photoPath, gp)
-
-	// Filename timestamp should take priority: 2023-03-02 11:20:40 UTC
-	expected := time.Date(2023, 3, 2, 11, 20, 40, 0, time.UTC)
-	if !ts.Equal(expected) {
-		t.Errorf("resolveTimestamp() = %v, want %v", ts, expected)
-	}
-
-	// Test JSON fallback (unparseable filename)
-	photoPath2 := filepath.Join(tmpDir, "unknown_name.jpg")
-	writeFile(t, tmpDir, "unknown_name.jpg", "fake content")
-	ts2 := resolveTimestamp(photoPath2, gp)
-	expected2 := time.Unix(1683012040, 0).UTC()
-	if !ts2.Equal(expected2) {
-		t.Errorf("resolveTimestamp() fallback = %v, want %v", ts2, expected2)
-	}
-
-	// Test zero time (both fail)
-	gp2 := &GooglePhoto{}
-	ts3 := resolveTimestamp(photoPath2, gp2)
-	if !ts3.IsZero() {
-		t.Errorf("resolveTimestamp() = %v, want zero time", ts3)
 	}
 }
 

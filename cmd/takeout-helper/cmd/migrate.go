@@ -84,7 +84,6 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 	fmt.Printf("  Scanned:            %d files\n", stats.Scanned)
 	fmt.Printf("  Processed:          %d files\n", stats.Processed)
 	fmt.Printf("  Skipped (exists):   %d files\n", stats.SkippedExists)
-	fmt.Printf("  Failed (exiftool):  %d files\n", stats.FailedExif)
 	fmt.Printf("  Failed (other):     %d files\n", stats.FailedOther)
 	fmt.Printf("  Manual review:      %d files\n", stats.ManualReview)
 	if migrateDryRun {
