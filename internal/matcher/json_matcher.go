@@ -74,16 +74,17 @@ type GooglePhoto struct {
 
 // JSONLookupResult holds the result of looking up a JSON sidecar for a photo.
 type JSONLookupResult struct {
-	JSONFile      string    // path to the matched JSON file
-	Timestamp     time.Time // extracted photo taken time (zero if parsing failed)
-	Lat           float64   // latitude from geoData
-	Lon           float64   // longitude from geoData
-	Alt           float64   // altitude from geoData
-	CameraMake    string    // device manufacturer
-	CameraModel   string    // device model
-	DeviceFolder  string    // device folder name from googlePhotosOrigin.mobileUpload.deviceFolder
-	DeviceType    string    // device type from googlePhotosOrigin.mobileUpload
-	GooglePhoto   *GooglePhoto // raw parsed JSON (for ResolveGPS caller access)
+	JSONFile        string    // path to the matched JSON file
+	Timestamp       time.Time // extracted photo taken time (zero if parsing failed)
+	Lat             float64   // latitude from geoData
+	Lon             float64   // longitude from geoData
+	Alt             float64   // altitude from geoData
+	CameraMake      string    // device manufacturer
+	CameraModel     string    // device model
+	DeviceFolder    string    // device folder name from googlePhotosOrigin.mobileUpload.deviceFolder
+	LocalFolderName string    // local folder name from googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName
+	DeviceType      string    // device type from googlePhotosOrigin.mobileUpload
+	GooglePhoto     *GooglePhoto // raw parsed JSON (for ResolveGPS caller access)
 }
 
 // supplementalSuffixes lists known supplemental-metadata suffixes that Google
@@ -337,15 +338,16 @@ func parseJSONLookup(jsonPath string) *JSONLookupResult {
 	}
 
 	result := &JSONLookupResult{
-		JSONFile:     jsonPath,
-		Lat:          gp.GeoData.Latitude,
-		Lon:          gp.GeoData.Longitude,
-		Alt:          gp.GeoData.Altitude,
-		CameraMake:   gp.CameraMake,
-		CameraModel:  gp.CameraModel,
-		DeviceFolder: gp.GooglePhotosOrigin.MobileUpload.DeviceFolder.LocalFolderName,
-		DeviceType:   gp.GooglePhotosOrigin.MobileUpload.DeviceType,
-		GooglePhoto:  &gp,
+		JSONFile:        jsonPath,
+		Lat:             gp.GeoData.Latitude,
+		Lon:             gp.GeoData.Longitude,
+		Alt:             gp.GeoData.Altitude,
+		CameraMake:      gp.CameraMake,
+		CameraModel:     gp.CameraModel,
+		DeviceFolder:    gp.GooglePhotosOrigin.MobileUpload.DeviceFolder.LocalFolderName,
+		LocalFolderName: gp.GooglePhotosOrigin.MobileUpload.DeviceFolder.LocalFolderName,
+		DeviceType:      gp.GooglePhotosOrigin.MobileUpload.DeviceType,
+		GooglePhoto:     &gp,
 	}
 
 	// Try to extract timestamp — prefer filename, fallback to JSON

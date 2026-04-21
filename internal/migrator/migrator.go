@@ -163,12 +163,30 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 
 	// Step 3a: Match JSON sidecar
 	jsonResult := matcher.JSONForFile(entry.Path, dirCache)
-	var deviceFolder, deviceType string
+	var deviceFolder, deviceType, destDir string
 	if jsonResult == nil {
 		logger.Info("no_json_sidecar", entry.RelPath)
+		destDir = outputDir
 	} else {
 		deviceFolder = jsonResult.DeviceFolder
 		deviceType = jsonResult.DeviceType
+		// Determine destination directory based on LocalFolderName
+		if jsonResult.LocalFolderName != "" {
+			destDir = filepath.Join(outputDir, jsonResult.LocalFolderName)
+		} else {
+			destDir = outputDir
+		}
+	}
+
+	// Create device folder if needed
+	if destDir != outputDir {
+		if err := os.MkdirAll(destDir, 0755); err != nil {
+			statsMu.Lock()
+			stats.FailedOther++
+			statsMu.Unlock()
+			logger.Fail("mkdir_error", entry.RelPath, err.Error())
+			return
+		}
 	}
 
 	// Step 3b: Extract JSON timestamp and GPS
@@ -210,8 +228,8 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 		return
 	}
 
-	// Step 3e: Copy file to output (flat); SHA-256 recomputed after exiftool mutations.
-	dstPath, copySHA256, exists, err := CopyAndHash(entry.Path, outputDir)
+	// Step 3e: Copy file to output; SHA-256 recomputed after exiftool mutations.
+	dstPath, copySHA256, exists, err := CopyAndHash(entry.Path, destDir)
 	if err != nil {
 		statsMu.Lock()
 		stats.FailedOther++
