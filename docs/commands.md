@@ -6,7 +6,7 @@ This document provides complete reference for all `takeout-helper` commands, inc
 
 | Command | Purpose | Typical Use |
 |---------|---------|-------------|
-| `migrate` | Migrate Google Takeout photos with EXIF metadata | Initial import from Google Takeout export |
+| `migrate` | Migrate Google Takeout photos with file timestamps | Initial import from Google Takeout export |
 | `classify` | Classify media by type (camera, screenshot, WeChat, etc.) | Organize mixed media sources |
 | `convert` | Convert images to HEIC format | Reduce file sizes with modern codec |
 | `fix-exif` | Sync DateTimeOriginal → CreateDate & ModifyDate | Fix timestamp consistency |
@@ -20,15 +20,16 @@ This document provides complete reference for all `takeout-helper` commands, inc
 
 ## migrate
 
-**Purpose:** Migrate photos from Google Takeout export to a clean directory structure with EXIF metadata restoration.
+**Purpose:** Migrate photos from Google Takeout export to a clean directory structure with file modification timestamps.
 
 **What it does:**
 - Scans year folders (`Photos from XXXX`) in input directory
 - Copies files to output directory
-- Restores metadata from JSON sidecars to EXIF tags using exiftool:
-  - **CreateDate**: Synchronized from JSON `photoTakenTime` (when photo was taken)
-  - **FileModifyDate**: Synchronized from JSON `creationTime` (when added to Google Photos), with fallback to `photoTakenTime`
-  - **DateTimeOriginal**: Left untouched to preserve original EXIF values
+- Sets file modification time (ModifyDate) from JSON sidecars using `os.Chtimes()`:
+  - **ModifyTime**: Synchronized from JSON `photoTakenTime` (优先 - priority)
+  - **Fallback**: Uses JSON `creationTime` if `photoTakenTime` missing
+  - **No EXIF modification**: Original EXIF data (DateTimeOriginal, etc.) is completely preserved
+- Organizes files into device-specific folders based on `googlePhotosOrigin` metadata when available
 - Generates SHA-256-based metadata JSON files with timestamp source tracking
 - Creates log file with per-file decisions
 - Moves files with missing timestamps to `manual_review` directory for human review
@@ -38,9 +39,7 @@ This document provides complete reference for all `takeout-helper` commands, inc
 ```
 --input-dir string     Input directory containing Google Takeout exports (required)
 --output-dir string    Output directory for organized photos (required)
---year string          Only process specific year folder(s) (optional)
 --dry-run              Preview migration without modifying files
---quality int          HEIC encoding quality for photos converted to HEIC (1–100, default: 75)
 ```
 
 ### Examples
@@ -51,31 +50,31 @@ takeout-helper migrate --input-dir ~/Takeout --output-dir ~/Photos
 
 # Preview only
 takeout-helper migrate --input-dir ~/Takeout --output-dir ~/Photos --dry-run
-
-# Process specific year only
-takeout-helper migrate --input-dir ~/Takeout --output-dir ~/Photos --year 2023
 ```
 
 ### Output
 
-- Organized photo files in output directory with metadata restored
+- Organized photo files in output directory with file modification times set
 - `takeout-helper-log/migrate-YYYYMMDD-NNN.log` with processing summary (Processed, Skipped, Failed counts)
 - `.metadata.json` files tracking metadata sources:
-  - `timestamp`: Overall timestamp info (for backward compatibility)
-  - `create_date.source`: Source of CreateDate (e.g., "photoTakenTime")
-  - `file_modify_date.source`: Source of FileModifyDate (e.g., "creationTime", "photoTakenTime_fallback")
+  - `timestamp`: Overall timestamp info (from JSON sidecar)
+  - `file_modify_date.source`: Source of file ModifyTime (e.g., "photoTakenTime", "creationTime")
 - `manual_review/` directory containing photos with missing timestamp data for manual handling
 
-### Timestamp Handling
+### Timestamp Handling (優先级)
 
-The migrate command uses two distinct timestamps from JSON sidecars:
+The migrate command sets file modification time using a unified priority strategy:
 
-| EXIF Field | JSON Source | Fallback | Manual Review |
+| Source | Primary | Fallback | Manual Review |
 |---|---|---|---|
-| **CreateDate** | `photoTakenTime` | — | If missing |
-| **FileModifyDate** | `creationTime` | `photoTakenTime` | If both missing |
+| **photoTakenTime** (拍摄时间) | ✓ Preferred | — | If missing |
+| **creationTime** (上传时间) | — | Used if photoTakenTime absent | If both missing |
 
-Timestamps are converted from UTC (as stored in JSON) to local system timezone before writing to EXIF.
+**Key behaviors:**
+- Unix timestamps from JSON (UTC-based) are automatically converted to local system timezone
+- File EXIF data remains completely unchanged (no exiftool invocation)
+- Cross-platform: Works on Windows, macOS, Linux without external tools
+- Metadata JSON includes `file_modify_date.source` for audit trail
 
 ### Notes
 

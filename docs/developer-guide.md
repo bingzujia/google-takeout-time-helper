@@ -689,45 +689,45 @@ if err != nil {
 
 ### Metadata Priority (Resolution)
 
-Timestamp and GPS are resolved in priority order:
+Timestamp and GPS resolution strategies vary by command:
 
-**Timestamp:**
+**For other commands** (resolve timestamps from multiple sources):
 1. EXIF DateTimeOriginal (most reliable)
 2. Filename embedded timestamp
 3. JSON photoTakenTime
 4. NULL if all missing
 
-**GPS:**
+**GPS Resolution:**
 1. EXIF GPS tags
 2. JSON geoData
 3. NULL if all missing
 
 **Design principle:** EXIF is most reliable; filename is fallback for missing EXIF; JSON is last resort.
 
-### Separate EXIF Timestamp Sources
+### File Timestamp Synchronization (migrate command)
 
-The migrate command writes **CreateDate** and **FileModifyDate** from separate JSON fields to better represent photo metadata:
+The migrate command sets **file modification time** (not EXIF) using a unified priority strategy:
 
-**CreateDate (when photo was taken):**
-- Priority 1: JSON `photoTakenTime` 
-- Fallback: Move to manual_review if missing
+**Priority for file ModifyTime:**
+1. JSON `photoTakenTime` (優先 - prefers capture time over upload time)
+2. JSON `creationTime` (fallback - if photoTakenTime missing)
+3. Move to manual_review (if both timestamps missing)
 
-**FileModifyDate (when added to Google Photos):**
-- Priority 1: JSON `creationTime`
-- Priority 2: JSON `photoTakenTime` (fallback)
-- Fallback: Move to manual_review if both missing
+**Key properties:**
+- Uses `os.Chtimes()` (Go stdlib) instead of exiftool
+- Cross-platform: Windows, macOS, Linux without external tool dependencies
+- No EXIF modification: DateTimeOriginal and all EXIF fields remain untouched
+- Timezone conversion: Unix timestamps from JSON (UTC) automatically converted to local system timezone
 
-**DateTimeOriginal:** Never modified by migrate (preserved from existing EXIF).
-
-**Timezone Conversion:** Unix timestamps from JSON (UTC) are automatically converted to local system timezone before writing to EXIF using `time.Unix()`.
-
-**Metadata Tracking:** The metadata JSON includes `create_date.source` and `file_modify_date.source` fields for traceability:
-- `"photoTakenTime"` - Used JSON photoTakenTime
-- `"creationTime"` - Used JSON creationTime
-- `"photoTakenTime_fallback"` - Used JSON photoTakenTime as fallback for FileModifyDate
+**Metadata Tracking:** The metadata JSON includes `file_modify_date.source` field:
+- `"photoTakenTime"` - Used JSON photoTakenTime (primary source)
+- `"creationTime"` - Used JSON creationTime (when photoTakenTime missing)
 - `"manual_review"` - File moved to manual_review due to missing timestamps
 
-**Implementation:** See `ResolvePhotoTimestamp()` and `ResolveModifyTimestamp()` in `internal/migrator/migrator.go` for priority logic.
+**Implementation:**
+- `applyFileTimestamp()` - Applies file modification time via `os.Chtimes()`
+- `ResolveModifyTimestamp()` - Determines which JSON timestamp to use
+- Error handling: `os.Chtimes()` errors move file to manual_review with error logged
 
 ### Logging Location
 

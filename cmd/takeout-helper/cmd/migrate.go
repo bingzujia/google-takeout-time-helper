@@ -11,14 +11,15 @@ import (
 
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
-	Short: "Migrate Google Takeout photos with EXIF metadata",
+	Short: "Migrate Google Takeout photos with file timestamps",
 	Long: `Migrate photos from Google Takeout to a clean directory structure.
 
 Scans year folders (Photos from XXXX) in the input directory, copies files to
-the output directory, and writes CreateDate + ModifyDate from JSON sidecar
-timestamps via exiftool. GPS is supplemented from JSON when absent from EXIF.
-Files without a JSON sidecar are copied as-is. Generates SHA-256-based metadata
-JSON files and a gtoh-log/migrate-{date}-{index}.log with per-file decisions.`,
+the output directory, and sets file modification times from JSON sidecar
+timestamps via os.Chtimes() (cross-platform, no external tools required).
+Files are organized into device-specific folders based on googlePhotosOrigin
+metadata when available. Generates SHA-256-based metadata JSON files and a
+takeout-helper-log/migrate-{date}-{index}.log with per-file decisions.`,
 	Args: cobra.NoArgs,
 	RunE: runMigrate,
 }

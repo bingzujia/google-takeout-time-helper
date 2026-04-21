@@ -96,9 +96,8 @@ func Run(cfg Config) (*Stats, error) {
 	fmt.Printf("Found %d files in %d year folder(s)\n\n", len(entries), len(yearFolders))
 
 	// Phase 2: Process files with progress bar
-	exifWriter := &ExifWriter{}
 	stats := &Stats{}
-	processFiles(entries, cfg.OutputDir, metadataDir, manualReviewDir, logger, exifWriter, stats, cfg.ShowProgress)
+	processFiles(entries, cfg.OutputDir, metadataDir, manualReviewDir, logger, stats, cfg.ShowProgress)
 
 	return stats, nil
 }
@@ -136,7 +135,7 @@ func scanFiles(yearFolders []string, inputDir string) ([]FileEntry, error) {
 
 // processFiles iterates over all entries and processes each one concurrently.
 func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir string,
-	logger *logutil.Logger, exifWriter *ExifWriter, stats *Stats, showProgress bool) {
+	logger *logutil.Logger, stats *Stats, showProgress bool) {
 
 	var statsMu sync.Mutex // protects Stats fields
 	var processed atomic.Int64
@@ -147,7 +146,7 @@ func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir s
 	dirCache := &matcher.DirCache{}
 
 	_ = workerpool.Run(entries, workerpool.DefaultWorkers(), func(entry FileEntry) error {
-		processSingleFile(entry, outputDir, metadataDir, manualReviewDir, logger, exifWriter, stats, &statsMu, dirCache)
+		processSingleFile(entry, outputDir, metadataDir, manualReviewDir, logger, stats, &statsMu, dirCache)
 		reporter.Update(int(processed.Add(1)))
 		return nil
 	})
@@ -155,7 +154,7 @@ func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir s
 
 // processSingleFile handles one media file through the full pipeline.
 func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir string,
-	logger *logutil.Logger, exifWriter *ExifWriter, stats *Stats, statsMu *sync.Mutex, dirCache *matcher.DirCache) {
+	logger *logutil.Logger, stats *Stats, statsMu *sync.Mutex, dirCache *matcher.DirCache) {
 
 	statsMu.Lock()
 	stats.Scanned++
@@ -193,11 +192,8 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	jsonTimestamp := time.Time{}
 	var jsonGPS parser.GPSInfo
 	jsonGPSOk := false
-	photoTakenTs := int64(0)
 	fileModifyTs := int64(0)
-	photoTsSource := ""
 	modifyTsSource := ""
-	shouldMovePhotoTs := false
 	shouldMoveModifyTs := false
 
 	if jsonResult != nil {
@@ -213,14 +209,11 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 			}
 			jsonGPSOk = true
 		}
-		// Resolve separate timestamps for CreateDate and FileModifyDate
-		photoTakenTs, photoTsSource, shouldMovePhotoTs = ResolvePhotoTimestamp(jsonResult)
+		// Resolve ModifyTime timestamp (unified priority: photoTakenTime → creationTime → manual_review)
 		fileModifyTs, modifyTsSource, shouldMoveModifyTs = ResolveModifyTimestamp(jsonResult)
 	} else {
-		// No JSON sidecar — both timestamps require manual review
-		photoTsSource = "manual_review"
+		// No JSON sidecar — requires manual review
 		modifyTsSource = "manual_review"
-		shouldMovePhotoTs = true
 		shouldMoveModifyTs = true
 	}
 
@@ -229,14 +222,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	exifGPSOk := exifGPS.Has
 
 	// Check if we should move to manual_review due to missing timestamps
-	bothTimestampsMissing := shouldMovePhotoTs && shouldMoveModifyTs
-	hasTimestamp := photoTakenTs != 0 || fileModifyTs != 0
-
-	// willWriteExif is true when we'll actually invoke exiftool on the output file
-	willWriteExif := hasTimestamp || (!exifGPSOk && jsonGPSOk)
-
-	// If both timestamps are missing and no GPS to write, move to manual review
-	if bothTimestampsMissing && (!exifGPSOk && !jsonGPSOk) {
+	if shouldMoveModifyTs {
 		statsMu.Lock()
 		stats.ManualReview++
 		statsMu.Unlock()
@@ -246,18 +232,7 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 		return
 	}
 
-	// Step 3d: If we'd need to write EXIF, check format support early (before copy)
-	if willWriteExif && !IsWriteSupported(entry.Path) {
-		statsMu.Lock()
-		stats.ManualReview++
-		statsMu.Unlock()
-		logger.Fail("filetype_unsupported", entry.RelPath, "exiftool does not support writing this format")
-		moveToManualReview(entry, outputDir, manualReviewDir, jsonResult, jsonTimestamp,
-			exifGPS, exifGPSOk, jsonGPS, jsonGPSOk, deviceFolder, deviceType, "exif_unsupported")
-		return
-	}
-
-	// Step 3e: Copy file to output; SHA-256 recomputed after exiftool mutations.
+	// Step 3e: Copy file to output; SHA-256 computed at copy time.
 	dstPath, copySHA256, exists, err := CopyAndHash(entry.Path, destDir)
 	if err != nil {
 		statsMu.Lock()
@@ -275,91 +250,24 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 		return
 	}
 
-	// Step 3f: No EXIF writes needed — write metadata directly and return
-	if !willWriteExif {
-		finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
-		meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "", photoTsSource, modifyTsSource)
-		meta.SHA256 = copySHA256
-		if err := WriteMetadata(metadataDir, meta); err != nil {
+	// Step 3f: Apply file ModifyTime using os.Chtimes() if we have a timestamp
+	// New behavior: Set file system timestamp using photoTakenTime or creationTime (fallback)
+	if fileModifyTs != 0 {
+		if err := applyFileTimestamp(dstPath, fileModifyTs); err != nil {
 			statsMu.Lock()
-			stats.FailedOther++
+			stats.ManualReview++
 			statsMu.Unlock()
-			logger.Fail("metadata_write", entry.RelPath, err.Error())
-			moveToErrorByPath(dstPath, entry.RelPath, outputDir, jsonResult)
+			logger.Fail("timestamp_write", entry.RelPath, err.Error())
+			moveToManualReviewByPath(dstPath, entry.RelPath, outputDir, manualReviewDir, jsonResult, jsonTimestamp,
+				exifGPS, exifGPSOk, jsonGPS, jsonGPSOk, deviceFolder, deviceType, "timestamp_error")
 			return
 		}
-		statsMu.Lock()
-		stats.Processed++
-		statsMu.Unlock()
-		return
 	}
 
-	// Step 3g: Detect file type and temporarily rename for exiftool
-	exifPath, cleanupRename, err := handleTypeMismatch(dstPath, entry, outputDir, jsonResult, logger, stats, statsMu)
-	if err != nil {
-		return
-	}
-
-	// Step 3h: Write CreateDate+ModifyDate from separate JSON timestamps (not DateTimeOriginal)
-	// Using WriteSeparateTimestamps to handle photoTakenTime → CreateDate, creationTime → FileModifyDate
-	var exifWriteErr error
-	if hasTimestamp {
-		exifWriteErr = exifWriter.WriteSeparateTimestamps(exifPath, photoTakenTs, fileModifyTs)
-	}
-	// Supplement GPS from JSON when EXIF GPS is missing
-	if exifWriteErr == nil && !exifGPSOk && jsonGPSOk {
-		exifWriteErr = exifWriter.WriteGPS(exifPath, jsonGPS.Lat, jsonGPS.Lon)
-	}
-
-	if exifWriteErr != nil {
-		reviewReason := "exif_corrupt"
-		if isUnsupportedFormatError(exifWriteErr) {
-			reviewReason = "exif_unsupported"
-		}
-		if restoreErr := cleanupRename(); restoreErr != nil {
-			statsMu.Lock()
-			stats.ManualReview++
-			statsMu.Unlock()
-			logger.Fail(reviewReason, entry.RelPath,
-				fmt.Sprintf("exiftool: %v, cleanup: %v", exifWriteErr, restoreErr))
-			moveToManualReviewByPath(exifPath, entry.RelPath, outputDir, manualReviewDir, jsonResult, jsonTimestamp,
-				exifGPS, exifGPSOk, jsonGPS, jsonGPSOk, deviceFolder, deviceType, reviewReason)
-		} else {
-			statsMu.Lock()
-			stats.ManualReview++
-			statsMu.Unlock()
-			logger.Fail(reviewReason, entry.RelPath, exifWriteErr.Error())
-			moveToManualReviewByPath(dstPath, entry.RelPath, outputDir, manualReviewDir, jsonResult, jsonTimestamp,
-				exifGPS, exifGPSOk, jsonGPS, jsonGPSOk, deviceFolder, deviceType, reviewReason)
-		}
-		return
-	}
-
-	// Restore original filename before final hash
-	if err := cleanupRename(); err != nil {
-		statsMu.Lock()
-		stats.FailedOther++
-		statsMu.Unlock()
-		logger.Fail("cleanup_rename", entry.RelPath, err.Error())
-		moveToErrorByPath(exifPath, entry.RelPath, outputDir, jsonResult)
-		return
-	}
-
-	// Step 3i: Recompute SHA-256 on the final output file (after exiftool mutation).
-	finalSHA256, err := HashFile(dstPath)
-	if err != nil {
-		statsMu.Lock()
-		stats.FailedOther++
-		statsMu.Unlock()
-		logger.Fail("hash_error", entry.RelPath, err.Error())
-		moveToErrorByPath(dstPath, entry.RelPath, outputDir, jsonResult)
-		return
-	}
-
-	// Step 3j: Write metadata JSON
+	// Step 3g: Write metadata JSON
 	finalGPS, gpsSource := resolveGPS(exifGPS, exifGPSOk, jsonGPS, jsonGPSOk)
-	meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "", photoTsSource, modifyTsSource)
-	meta.SHA256 = finalSHA256
+	meta := buildMetadata(entry.RelPath, filepath.Base(dstPath), jsonTimestamp, finalGPS, gpsSource, deviceFolder, deviceType, "", modifyTsSource, modifyTsSource)
+	meta.SHA256 = copySHA256
 	if err := WriteMetadata(metadataDir, meta); err != nil {
 		statsMu.Lock()
 		stats.FailedOther++
@@ -504,9 +412,11 @@ func resolveGPS(exifGPS parser.GPSInfo, exifGPSOk bool, jsonGPS parser.GPSInfo, 
 	return parser.GPSInfo{}, "none"
 }
 
-// ResolvePhotoTimestamp returns the Unix timestamp for CreateDate field from JSON.
-// Priority: photoTakenTime → fallback to manual_review
+// ResolvePhotoTimestamp returns the Unix timestamp for file ModifyTime from JSON.
+// Priority: photoTakenTime → 0 (no fallback)
 // Returns (timestamp, source, shouldMoveToManualReview)
+// Updated: Both CreateDate and FileModifyDate now use photoTakenTime priorityuniformly,
+// with separate fallback logic in ResolveModifyTimestamp()
 func ResolvePhotoTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string, bool) {
 	if jsonResult == nil {
 		return 0, "manual_review", true
@@ -517,20 +427,46 @@ func ResolvePhotoTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string,
 	return 0, "manual_review", true
 }
 
-// ResolveModifyTimestamp returns the Unix timestamp for FileModifyDate field from JSON.
-// Priority: creationTime → photoTakenTime fallback → manual_review
+// ResolveModifyTimestamp returns the Unix timestamp for file ModifyTime from JSON.
+// Priority: photoTakenTime (優先) → creationTime (fallback) → 0 (manual_review)
 // Returns (timestamp, source, shouldMoveToManualReview)
+// Updated behavior: photoTakenTime is now the primary source for ModifyTime (not just fallback)
 func ResolveModifyTimestamp(jsonResult *matcher.JSONLookupResult) (int64, string, bool) {
 	if jsonResult == nil {
 		return 0, "manual_review", true
 	}
+	// Priority 1: photoTakenTime (優先使用拍摄时间)
+	if jsonResult.PhotoTakenTimeUnix != 0 {
+		return jsonResult.PhotoTakenTimeUnix, "photoTakenTime", false
+	}
+	// Priority 2: creationTime (fallback 使用上传时间)
 	if jsonResult.CreationTimeUnix != 0 {
 		return jsonResult.CreationTimeUnix, "creationTime", false
 	}
-	if jsonResult.PhotoTakenTimeUnix != 0 {
-		return jsonResult.PhotoTakenTimeUnix, "photoTakenTime_fallback", false
-	}
+	// Both missing: manual_review
 	return 0, "manual_review", true
+}
+
+// applyFileTimestamp sets file modification time using os.Chtimes() with error handling.
+// Returns error if the operation fails (permission denied, invalid timestamp, etc.)
+// Returns nil if successful.
+func applyFileTimestamp(filePath string, modifyTimestamp int64) error {
+	if modifyTimestamp <= 0 {
+		// Invalid timestamp, skip silently (should be caught earlier)
+		return nil
+	}
+
+	// Convert Unix timestamp to time.Time
+	mtime := time.Unix(modifyTimestamp, 0)
+
+	// Use same time for both atime and mtime
+	// os.Chtimes(path, atime, mtime) modifies access and modification times
+	err := os.Chtimes(filePath, mtime, mtime)
+	if err != nil {
+		return fmt.Errorf("os.Chtimes(%s): %w", filePath, err)
+	}
+
+	return nil
 }
 
 // moveToManualReview copies a file (not yet in output) to the manual_review directory

@@ -261,7 +261,9 @@ t.Errorf("needMove = %v, want %v", needMove, tc.expectNeedMove)
 }
 }
 
-// TestResolveModifyTimestamp tests the timestamp resolver for FileModifyDate with fallback logic
+
+// TestResolveModifyTimestamp tests the timestamp resolver for FileModifyDate with new priority
+// New behavior: photoTakenTime (優先) → creationTime (fallback) → manual_review
 func TestResolveModifyTimestamp(t *testing.T) {
 tests := []struct {
 name           string
@@ -271,23 +273,33 @@ expectSource   string
 expectNeedMove bool
 }{
 {
-name: "creationTime present",
+name: "photoTakenTime present (優先)",
+jsonResult: &matcher.JSONLookupResult{
+PhotoTakenTimeUnix: 1683012040,
+CreationTimeUnix:   1683015000,
+},
+expectTs:       1683012040,
+expectSource:   "photoTakenTime",
+expectNeedMove: false,
+},
+{
+name: "only creationTime present",
 jsonResult: &matcher.JSONLookupResult{
 CreationTimeUnix:   1683015000,
-PhotoTakenTimeUnix: 1683012040,
+PhotoTakenTimeUnix: 0,
 },
 expectTs:       1683015000,
 expectSource:   "creationTime",
 expectNeedMove: false,
 },
 {
-name: "creationTime missing, photoTakenTime fallback",
+name: "only photoTakenTime present",
 jsonResult: &matcher.JSONLookupResult{
 CreationTimeUnix:   0,
 PhotoTakenTimeUnix: 1683012040,
 },
 expectTs:       1683012040,
-expectSource:   "photoTakenTime_fallback",
+expectSource:   "photoTakenTime",
 expectNeedMove: false,
 },
 {
@@ -322,5 +334,15 @@ if needMove != tc.expectNeedMove {
 t.Errorf("needMove = %v, want %v", needMove, tc.expectNeedMove)
 }
 })
+}
+}
+
+// TestApplyFileTimestamp_PermissionError tests error handling for permission denied
+// TestApplyFileTimestamp_NonexistentFile tests error handling for nonexistent file
+func TestApplyFileTimestamp_NonexistentFile(t *testing.T) {
+nonexistent := "/tmp/nonexistent-file-that-does-not-exist-12345.txt"
+err := applyFileTimestamp(nonexistent, int64(1683012040))
+if err == nil {
+t.Errorf("applyFileTimestamp should have failed for nonexistent file")
 }
 }
