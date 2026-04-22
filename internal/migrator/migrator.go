@@ -222,14 +222,14 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	
 	// Determine destination directory based on classification mode
 	if classifyByUploadFolder {
-		// Device-based classification
+		// Device-based classification: organize under classify-by-uploadFolder/
 		if jsonResult != nil && jsonResult.LocalFolderName != "" {
-			destDir = filepath.Join(outputDir, jsonResult.LocalFolderName)
+			destDir = filepath.Join(outputDir, "classify-by-uploadFolder", jsonResult.LocalFolderName)
 			deviceFolder = jsonResult.DeviceFolder
 			deviceType = jsonResult.DeviceType
 		} else {
-			// No localFolderName: put in root directory
-			destDir = outputDir
+			// No localFolderName: put directly in classify-by-uploadFolder root
+			destDir = filepath.Join(outputDir, "classify-by-uploadFolder")
 			if jsonResult != nil {
 				deviceFolder = jsonResult.DeviceFolder
 				deviceType = jsonResult.DeviceType
@@ -666,22 +666,22 @@ func runDry(cfg Config) (*Stats, error) {
 
 	// Process files in dry-run mode
 	stats := &Stats{}
-	dryRunProcessFiles(entries, cfg.InputDir, stats)
+	dryRunProcessFiles(entries, cfg.InputDir, stats, cfg.ClassifyByUploadFolder)
 
 	return stats, nil
 }
 
 // dryRunProcessFiles scans all entries and prints what would happen, without modifying any files.
-func dryRunProcessFiles(entries []FileEntry, inputDir string, stats *Stats) {
+func dryRunProcessFiles(entries []FileEntry, inputDir string, stats *Stats, classifyByUploadFolder bool) {
 	for _, entry := range entries {
-		dryRunProcessSingle(entry, inputDir, stats)
+		dryRunProcessSingle(entry, inputDir, stats, classifyByUploadFolder)
 	}
 
 	fmt.Println()
 }
 
 // dryRunProcessSingle analyzes one file and prints its status.
-func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
+func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats, classifyByUploadFolder bool) {
 	stats.Scanned++
 
 	// Match JSON sidecar
@@ -689,6 +689,25 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 	jsonStatus := "missing"
 	if jsonResult != nil {
 		jsonStatus = "matched"
+	}
+
+	// Determine destination directory for display (same logic as processSingleFile)
+	var destDir string
+	if classifyByUploadFolder {
+		// Device-based classification: organize under classify-by-uploadFolder/
+		if jsonResult != nil && jsonResult.LocalFolderName != "" {
+			destDir = filepath.Join("classify-by-uploadFolder", jsonResult.LocalFolderName)
+		} else {
+			// No localFolderName: put directly in classify-by-uploadFolder root
+			destDir = "classify-by-uploadFolder"
+		}
+	} else {
+		// Time-based classification (default): organize by year folder
+		if entry.SourceYear != "" {
+			destDir = "Photos_from_" + entry.SourceYear
+		} else {
+			destDir = "."
+		}
 	}
 
 	// Extract JSON timestamp and GPS
@@ -731,8 +750,8 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 		gpsStr = fmt.Sprintf("yes (%s)", gpsSource)
 	}
 
-	// Print status
+	// Print status with destination directory
 	stats.Processed++
-	fmt.Printf("  [PROCESSED] %-50s Time: %-20s (%-8s) GPS: %-12s JSON: %-7s\n",
-		entry.RelPath, jsonTimeStr, finalTimeSrc, gpsStr, jsonStatus)
+	fmt.Printf("  [PROCESSED] %-50s → %-30s Time: %-20s (%-8s) GPS: %-12s JSON: %-7s\n",
+		entry.RelPath, destDir, jsonTimeStr, finalTimeSrc, gpsStr, jsonStatus)
 }

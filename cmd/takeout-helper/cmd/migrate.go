@@ -17,8 +17,12 @@ var migrateCmd = &cobra.Command{
 Scans year folders (Photos from XXXX) in the input directory, copies files to
 the output directory, and sets file modification times from JSON sidecar
 timestamps via os.Chtimes() (cross-platform, no external tools required).
-Files are organized into device-specific folders based on googlePhotosOrigin
-metadata when available. Generates SHA-256-based metadata JSON files and a
+
+Supports two classification modes:
+- Default (time-based): Organizes files by year (Photos_from_2024/, Photos_from_2023/, etc.)
+- Device-based (--classify-by-uploadFolder): Organizes files by device under classify-by-uploadFolder/
+
+Generates SHA-256-based metadata JSON files and a
 takeout-helper-log/migrate-{date}-{index}.log with per-file decisions.`,
 	Args: cobra.NoArgs,
 	RunE: runMigrate,

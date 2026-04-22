@@ -179,12 +179,15 @@ Output/
 **Device-based mode (with `--classify-by-uploadFolder`):**
 ```
 Output/
-├── <localFolderName>/                # device folder from JSON metadata
-│   ├── IMG_1234.jpg                  # migrated photos (from all years)
-│   ├── IMG_5678.jpg
-│   └── ...
-├── Pixel 6/                          # another device
-│   └── ...
+├── classify-by-uploadFolder/         # container for device-based organization
+│   ├── Pixel 6/                      # device folder (googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName)
+│   │   ├── IMG_2024_001.jpg          # migrated photos (from all years, same device)
+│   │   ├── IMG_2023_456.jpg
+│   │   └── ...
+│   ├── iPhone 13/                    # another device
+│   │   ├── IMG_2024_789.jpg
+│   │   └── ...
+│   └── IMG_orphan.jpg                # files without device metadata go here
 ├── metadata/                         # centralized metadata directory (same as default)
 │   ├── <SHA256_hash>.json
 │   └── ...
@@ -202,10 +205,14 @@ Output/
 ```
 
 **Key details:**
-- **<localFolderName>**: Value from JSON `googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName` (e.g., "Pixel 6", "iPhone 13"). In device mode, if absent, files go to Output root.
+- **classify-by-uploadFolder/**: Created only when `--classify-by-uploadFolder` flag is used; all device-based organization happens here
+- **<localFolderName>**: Value from JSON `googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName` (e.g., "Pixel 6", "iPhone 13")
+  - Files with localFolderName → `classify-by-uploadFolder/<device>/`
+  - Files without localFolderName → `classify-by-uploadFolder/` (root)
 - **<SHA256_hash>**: File SHA-256 hash used as metadata index (not photo filename).
 - **error/** & **manual_review/**: Handle edge cases (missing timestamps, EXIF issues, etc.)
 - **metadata/** directory is **always at Output root** — not affected by classification mode
+- **Multi-year consolidation**: Files from the same device across multiple years (e.g., 2024 and 2023) are merged into the same device folder
 
 ### Timestamp Handling
 
