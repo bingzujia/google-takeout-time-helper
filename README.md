@@ -279,6 +279,14 @@ See [docs/developer-guide.md](docs/developer-guide.md) for architecture and impl
 
 ---
 
+## Acknowledgments
+
+This project is inspired by and builds upon the excellent work of:
+
+- **[GooglePhotosTakeoutHelper](https://github.com/TheLastGimbus/GooglePhotosTakeoutHelper)** — For pioneering the approach to organizing Google Takeout exports and handling JSON sidecar matching. We've adapted and extended those concepts with a cross-platform Go implementation, multi-year consolidation, and device-based organization features.
+
+---
+
 ## License
 
 See LICENSE file.
