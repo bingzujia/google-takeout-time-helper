@@ -71,6 +71,51 @@ make build          # produces: bin/takeout-helper
 
 Output shows what would happen without making changes.
 
+### Classification Modes
+
+By default, files are organized by **year** (matching the input folder structure):
+
+```bash
+./takeout-helper migrate \
+  --input-dir ~/Downloads/Takeout \
+  --output-dir ~/Photos/Organized
+```
+
+Output structure:
+```
+Output/
+├── Photos_from_2024/
+│   ├── IMG_1234.jpg
+│   ├── IMG_5678.jpg
+│   └── ...
+├── Photos_from_2023/
+│   └── ...
+└── metadata/
+```
+
+To organize by **device** (consolidating photos from the same device across multiple years), use `--classify-by-uploadFolder`:
+
+```bash
+./takeout-helper migrate \
+  --input-dir ~/Downloads/Takeout \
+  --output-dir ~/Photos/Organized \
+  --classify-by-uploadFolder
+```
+
+Output structure:
+```
+Output/
+├── Pixel 6/                 # device folder name (from JSON metadata)
+│   ├── IMG_2024_001.jpg     # photos from all years, same device
+│   ├── IMG_2023_456.jpg
+│   └── ...
+├── iPhone 13/               # another device
+│   └── ...
+└── metadata/
+```
+
+**Note:** Files without device metadata go to the Output root directory.
+
 ### Help
 
 ```bash
@@ -104,17 +149,63 @@ Each photo typically has:
 
 ### Output Structure
 
+The output structure depends on the classification mode (see [Classification Modes](#classification-modes) above).
+
+**Default mode (year-based organization):**
 ```
 Output/
-├── camera-name/              # organized by device
-│   ├── metadata/
-│   │   ├── IMG_1234.json     # photo metadata with timestamp source
-│   │   └── ...
-│   ├── IMG_1234.jpg          # migrated photo
+├── Photos_from_2024/                 # year folder
+│   ├── IMG_1234.jpg                  # migrated photos
+│   ├── IMG_5678.jpg
 │   └── ...
+├── Photos_from_2023/                 # year folder
+│   └── ...
+├── metadata/                         # centralized metadata directory
+│   ├── <SHA256_hash>.json            # photo metadata indexed by file SHA-256
+│   └── ...
+├── error/                            # files that failed to migrate
+│   └── Photos from XXXX/
+│       ├── IMG_error.jpg
+│       └── IMG_error.jpg.json
+├── manual_review/                    # files missing timestamps or requiring review
+│   ├── Photos from XXXX/
+│   │   └── IMG_review.jpg
+│   └── metadata/
+│       └── <SHA256_hash>.json
 └── takeout-helper-log/
-    └── migrate-YYYYMMDD-NNN.log  # migration log
+    └── migrate-YYYYMMDD-NNN.log      # migration log with per-file decisions
 ```
+
+**Device-based mode (with `--classify-by-uploadFolder`):**
+```
+Output/
+├── <localFolderName>/                # device folder from JSON metadata
+│   ├── IMG_1234.jpg                  # migrated photos (from all years)
+│   ├── IMG_5678.jpg
+│   └── ...
+├── Pixel 6/                          # another device
+│   └── ...
+├── metadata/                         # centralized metadata directory (same as default)
+│   ├── <SHA256_hash>.json
+│   └── ...
+├── error/                            # files that failed to migrate
+│   └── Photos from XXXX/
+│       ├── IMG_error.jpg
+│       └── IMG_error.jpg.json
+├── manual_review/                    # files missing timestamps or requiring review
+│   ├── Photos from XXXX/
+│   │   └── IMG_review.jpg
+│   └── metadata/
+│       └── <SHA256_hash>.json
+└── takeout-helper-log/
+    └── migrate-YYYYMMDD-NNN.log
+```
+
+**Key details:**
+- **<localFolderName>**: Value from JSON `googlePhotosOrigin.mobileUpload.deviceFolder.localFolderName` (e.g., "Pixel 6", "iPhone 13"). In device mode, if absent, files go to Output root.
+- **<SHA256_hash>**: File SHA-256 hash used as metadata index (not photo filename).
+- **error/** & **manual_review/**: Handle edge cases (missing timestamps, EXIF issues, etc.)
+- **metadata/** directory is **always at Output root** — not affected by classification mode
 
 ### Timestamp Handling
 
@@ -122,17 +213,18 @@ File modification time is set using these priorities:
 
 1. **JSON `photoTakenTime`** (photo capture time) — preferred
 2. **JSON `creationTime`** (photo upload time) — fallback
-3. **Manual review** — if both missing, file is flagged for manual handling
+3. **Manual review** — if both missing, file is moved to `manual_review/` for manual handling
 
-No EXIF modification. The file's `ModifyTime` is what gets changed via `os.Chtimes()`.
+No EXIF modification. The file's `ModifyTime` is set via `os.Chtimes()` (cross-platform, no external tools).
 
 ### What Gets Logged
 
-Each migration produces a log with per-file decisions:
+Each migration produces a log at `takeout-helper-log/migrate-YYYYMMDD-NNN.log` with per-file decisions:
 
-- `INFO`: File successfully migrated (with timestamp source)
+- `INFO`: File successfully migrated (with timestamp source: json/filename/none)
 - `SKIP`: File already exists at destination
-- `FAIL`: Error during migration (invalid path, permission, etc.)
+- `FAIL`: Error during migration (invalid path, permission, I/O error, etc.)
+- Files moved to `manual_review/` (missing timestamps) are tracked in metadata but not counted in final summary
 
 ---
 

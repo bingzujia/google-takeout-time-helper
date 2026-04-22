@@ -40,62 +40,10 @@ func isVideo(ext string) bool {
 	mimeType := mime.TypeByExtension(ext)
 	return mimeType != "" && strings.HasPrefix(mimeType, "video/")
 }
-
-// mimeToExt maps MIME types to file extensions.
-func mimeToExt(mimeType string) string {
-	switch {
-	case mimeType == "image/jpeg":
-		return ".jpg"
-	case mimeType == "image/png":
-		return ".png"
-	case mimeType == "image/gif":
-		return ".gif"
-	case mimeType == "image/webp":
-		return ".webp"
-	case mimeType == "image/tiff":
-		return ".tiff"
-	case mimeType == "image/bmp":
-		return ".bmp"
-	case mimeType == "image/heic" || mimeType == "image/heif":
-		return ".heic"
-	case mimeType == "video/mp4":
-		return ".mp4"
-	case mimeType == "video/quicktime":
-		return ".mov"
-	case mimeType == "video/x-msvideo":
-		return ".avi"
-	case mimeType == "video/x-matroska":
-		return ".mkv"
-	case mimeType == "video/x-ms-wmv":
-		return ".wmv"
-	case mimeType == "video/x-flv":
-		return ".flv"
-	case mimeType == "video/3gpp":
-		return ".3gp"
-	case mimeType == "video/x-ms-asf":
-		return ".asf"
-	case mimeType == "video/mpeg":
-		return ".mpg"
-	default:
-		return ""
-	}
-}
-
-// isWriteSupported checks if exiftool can write EXIF metadata to the given file format.
-// Returns true if the format is supported, or true by default if detection fails (optimistic fallback).
-func isWriteSupported(filePath string) bool {
-	m, err := mimetype.DetectFile(filePath)
-	if err != nil {
-		return true // assume supported if we can't detect
-	}
-	
-	mimeType := m.String()
-	// WebP, WMV, and ASF formats do not support EXIF writing
-	return mimeType != "image/webp" && mimeType != "video/x-ms-wmv" && mimeType != "video/x-ms-asf"
-}
-
 // detectFileType detects the actual MIME type of a file and returns the correct extension
 // if it doesn't match the current extension. Returns empty string if no rename is needed.
+// Supported formats: JPEG, PNG, GIF, WebP, TIFF, BMP, HEIC, HEIF (images);
+// MP4, MOV, AVI, MKV, WMV, FLV, 3GP, ASF, MPEG (videos).
 func detectFileType(filePath string) (string, error) {
 	m, err := mimetype.DetectFile(filePath)
 	if err != nil {
@@ -104,7 +52,12 @@ func detectFileType(filePath string) (string, error) {
 	
 	mimeType := m.String()
 	currentExt := strings.ToLower(filepath.Ext(filePath))
-	targetExt := mimeToExt(mimeType)
+	
+	mimeInfo := mimetype.Lookup(mimeType)
+	if mimeInfo == nil {
+		return "", nil
+	}
+	targetExt := mimeInfo.Extension()
 	
 	if targetExt != "" && targetExt != currentExt {
 		return targetExt, nil
@@ -124,17 +77,19 @@ type Stats struct {
 
 // Config holds migration settings.
 type Config struct {
-	InputDir     string
-	OutputDir    string
-	ShowProgress bool            // whether to display progress bar
-	DryRun       bool            // preview only — no file operations
-	Logger       *logutil.Logger // structured log; if nil a Nop logger is used
+	InputDir               string
+	OutputDir              string
+	ShowProgress           bool            // whether to display progress bar
+	DryRun                 bool            // preview only — no file operations
+	ClassifyByUploadFolder bool            // organize by device (localFolderName) instead of year folders
+	Logger                 *logutil.Logger // structured log; if nil a Nop logger is used
 }
 
 // FileEntry holds pre-scanned file information.
 type FileEntry struct {
-	Path    string // absolute path
-	RelPath string // relative path (for logging)
+	Path       string // absolute path
+	RelPath    string // relative path (for logging)
+	SourceYear string // source year folder (e.g., "2024" from "Photos from 2024")
 }
 
 // Run executes the full migration pipeline.
@@ -190,7 +145,7 @@ func Run(cfg Config) (*Stats, error) {
 
 	// Phase 2: Process files with progress bar
 	stats := &Stats{}
-	processFiles(entries, cfg.OutputDir, metadataDir, manualReviewDir, logger, stats, cfg.ShowProgress)
+	processFiles(entries, cfg.OutputDir, metadataDir, manualReviewDir, logger, stats, cfg.ShowProgress, cfg.ClassifyByUploadFolder)
 
 	return stats, nil
 }
@@ -199,6 +154,13 @@ func Run(cfg Config) (*Stats, error) {
 func scanFiles(yearFolders []string, inputDir string) ([]FileEntry, error) {
 	var entries []FileEntry
 	for _, yf := range yearFolders {
+		// Extract year from folder name (e.g., "Photos from 2024" → "2024")
+		yearFolderName := filepath.Base(yf)
+		sourceYear := ""
+		if idx := strings.LastIndex(yearFolderName, " "); idx >= 0 {
+			sourceYear = yearFolderName[idx+1:]
+		}
+
 		if err := filepath.Walk(yf, func(path string, info os.FileInfo, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -215,8 +177,9 @@ func scanFiles(yearFolders []string, inputDir string) ([]FileEntry, error) {
 				relPath = path // fallback to absolute path
 			}
 			entries = append(entries, FileEntry{
-				Path:    path,
-				RelPath: relPath,
+				Path:       path,
+				RelPath:    relPath,
+				SourceYear: sourceYear,
 			})
 			return nil
 		}); err != nil {
@@ -228,7 +191,7 @@ func scanFiles(yearFolders []string, inputDir string) ([]FileEntry, error) {
 
 // processFiles iterates over all entries and processes each one concurrently.
 func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir string,
-	logger *logutil.Logger, stats *Stats, showProgress bool) {
+	logger *logutil.Logger, stats *Stats, showProgress bool, classifyByUploadFolder bool) {
 
 	var statsMu sync.Mutex // protects Stats fields
 	var processed atomic.Int64
@@ -239,7 +202,7 @@ func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir s
 	dirCache := &matcher.DirCache{}
 
 	_ = workerpool.Run(entries, workerpool.DefaultWorkers(), func(entry FileEntry) error {
-		processSingleFile(entry, outputDir, metadataDir, manualReviewDir, logger, stats, &statsMu, dirCache)
+		processSingleFile(entry, outputDir, metadataDir, manualReviewDir, logger, stats, &statsMu, dirCache, classifyByUploadFolder)
 		reporter.Update(int(processed.Add(1)))
 		return nil
 	})
@@ -247,7 +210,7 @@ func processFiles(entries []FileEntry, outputDir, metadataDir, manualReviewDir s
 
 // processSingleFile handles one media file through the full pipeline.
 func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir string,
-	logger *logutil.Logger, stats *Stats, statsMu *sync.Mutex, dirCache *matcher.DirCache) {
+	logger *logutil.Logger, stats *Stats, statsMu *sync.Mutex, dirCache *matcher.DirCache, classifyByUploadFolder bool) {
 
 	statsMu.Lock()
 	stats.Scanned++
@@ -256,18 +219,38 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	// Step 3a: Match JSON sidecar
 	jsonResult := matcher.JSONForFile(entry.Path, dirCache)
 	var deviceFolder, deviceType, destDir string
-	if jsonResult == nil {
-		logger.Info("no_json_sidecar", entry.RelPath)
-		destDir = outputDir
-	} else {
-		deviceFolder = jsonResult.DeviceFolder
-		deviceType = jsonResult.DeviceType
-		// Determine destination directory based on LocalFolderName
-		if jsonResult.LocalFolderName != "" {
+	
+	// Determine destination directory based on classification mode
+	if classifyByUploadFolder {
+		// Device-based classification
+		if jsonResult != nil && jsonResult.LocalFolderName != "" {
 			destDir = filepath.Join(outputDir, jsonResult.LocalFolderName)
+			deviceFolder = jsonResult.DeviceFolder
+			deviceType = jsonResult.DeviceType
+		} else {
+			// No localFolderName: put in root directory
+			destDir = outputDir
+			if jsonResult != nil {
+				deviceFolder = jsonResult.DeviceFolder
+				deviceType = jsonResult.DeviceType
+			}
+		}
+	} else {
+		// Time-based classification (default): organize by year folder
+		if entry.SourceYear != "" {
+			yearFolderName := "Photos_from_" + entry.SourceYear
+			destDir = filepath.Join(outputDir, yearFolderName)
 		} else {
 			destDir = outputDir
 		}
+		if jsonResult != nil {
+			deviceFolder = jsonResult.DeviceFolder
+			deviceType = jsonResult.DeviceType
+		}
+	}
+	
+	if jsonResult == nil {
+		logger.Info("no_json_sidecar", entry.RelPath)
 	}
 
 	// Create device folder if needed
@@ -374,61 +357,6 @@ func processSingleFile(entry FileEntry, outputDir, metadataDir, manualReviewDir 
 	statsMu.Lock()
 	stats.Processed++
 	statsMu.Unlock()
-}
-
-// handleTypeMismatch detects the actual file type and temporarily renames if needed.
-// Returns the temporary path (or original if no rename needed), a cleanup function,
-// or an error if the file should be moved to the error directory.
-func handleTypeMismatch(dstPath string, entry FileEntry, outputDir string,
-	jsonResult *matcher.JSONLookupResult, logger *logutil.Logger, stats *Stats, statsMu *sync.Mutex) (string, func() error, error) {
-
-	noOp := func() error { return nil }
-
-	newExt, err := detectFileType(dstPath)
-	if err != nil {
-		// Can't detect type, continue anyway
-		return dstPath, noOp, nil
-	}
-	if newExt == "" {
-		// Type matches current extension, no rename needed
-		return dstPath, noOp, nil
-	}
-
-	// Type mismatch: compute temporary filename
-	base := strings.TrimSuffix(filepath.Base(dstPath), filepath.Ext(dstPath))
-	tmpName := base + newExt
-	tmpPath := filepath.Join(outputDir, tmpName)
-
-	// Check if temp target already exists — use counter-based suffix
-	if _, err := os.Stat(tmpPath); err == nil {
-		ext := newExt
-		stem := base
-		for i := 1; ; i++ {
-			candidate := filepath.Join(outputDir, fmt.Sprintf("%s_%d%s", stem, i, ext))
-			if _, err := os.Stat(candidate); os.IsNotExist(err) {
-				tmpName = fmt.Sprintf("%s_%d%s", stem, i, ext)
-				tmpPath = candidate
-				break
-			}
-		}
-	}
-
-	// Temporary rename
-	if err := os.Rename(dstPath, tmpPath); err != nil {
-		statsMu.Lock()
-		stats.FailedOther++
-		statsMu.Unlock()
-		logger.Fail("rename_error", entry.RelPath, err.Error())
-		moveToErrorByPath(dstPath, entry.RelPath, outputDir, jsonResult)
-		return "", noOp, fmt.Errorf("rename: %w", err)
-	}
-
-	// Cleanup function to restore original name
-	cleanup := func() error {
-		return os.Rename(tmpPath, dstPath)
-	}
-
-	return tmpPath, cleanup, nil
 }
 
 // copyToPath copies src to dst using streaming io.Copy, leaving src untouched.
@@ -783,8 +711,6 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 		}
 	}
 
-	hasMetadata := jsonTimeOk || jsonGPSOk
-
 	// Determine final GPS for display
 	finalGPS := jsonGPS
 	gpsSource := "json"
@@ -805,20 +731,8 @@ func dryRunProcessSingle(entry FileEntry, inputDir string, stats *Stats) {
 		gpsStr = fmt.Sprintf("yes (%s)", gpsSource)
 	}
 
-	// Check if format is supported (only relevant when we have metadata to write)
-	reviewReason := ""
-	if hasMetadata && !isWriteSupported(entry.Path) {
-		reviewReason = "unsupported_format"
-	}
-
 	// Print status
-	if reviewReason != "" {
-		stats.ManualReview++
-		fmt.Printf("  [REVIEW   ] %-50s Time: %-20s (%-8s) GPS: %-12s JSON: %-7s Reason: %s\n",
-			entry.RelPath, jsonTimeStr, finalTimeSrc, gpsStr, jsonStatus, reviewReason)
-	} else {
-		stats.Processed++
-		fmt.Printf("  [PROCESSED] %-50s Time: %-20s (%-8s) GPS: %-12s JSON: %-7s\n",
-			entry.RelPath, jsonTimeStr, finalTimeSrc, gpsStr, jsonStatus)
-	}
+	stats.Processed++
+	fmt.Printf("  [PROCESSED] %-50s Time: %-20s (%-8s) GPS: %-12s JSON: %-7s\n",
+		entry.RelPath, jsonTimeStr, finalTimeSrc, gpsStr, jsonStatus)
 }

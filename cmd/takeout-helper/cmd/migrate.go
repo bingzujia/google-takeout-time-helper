@@ -25,15 +25,17 @@ takeout-helper-log/migrate-{date}-{index}.log with per-file decisions.`,
 }
 
 var (
-	migrateDryRun    bool
-	migrateInputDir  string
-	migrateOutputDir string
+	migrateDryRun            bool
+	migrateInputDir          string
+	migrateOutputDir         string
+	migrateClassifyByUpload  bool
 )
 
 func init() {
 	migrateCmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "preview migration without modifying files")
 	migrateCmd.Flags().StringVar(&migrateInputDir, "input-dir", "", "input directory containing Google Takeout exports")
 	migrateCmd.Flags().StringVar(&migrateOutputDir, "output-dir", "", "output directory for organized photos")
+	migrateCmd.Flags().BoolVar(&migrateClassifyByUpload, "classify-by-uploadFolder", false, "organize files by device (localFolderName) instead of year folders")
 	_ = migrateCmd.MarkFlagRequired("input-dir")
 	_ = migrateCmd.MarkFlagRequired("output-dir")
 	rootCmd.AddCommand(migrateCmd)
@@ -51,6 +53,12 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 	fmt.Printf("Input:  %s\n", inputDir)
 	fmt.Printf("Output: %s\n", outputDir)
 
+	classifyMode := "by year (Photos_from_YYYY)"
+	if migrateClassifyByUpload {
+		classifyMode = "by device (localFolderName)"
+	}
+	fmt.Printf("Classification: %s\n", classifyMode)
+
 	if migrateDryRun {
 		fmt.Println("\nDry-run mode — no files will be modified")
 	} else {
@@ -64,11 +72,12 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 	defer logger.Close()
 
 	stats, err := migrator.Run(migrator.Config{
-		InputDir:     inputDir,
-		OutputDir:    outputDir,
-		ShowProgress: !migrateDryRun,
-		DryRun:       migrateDryRun,
-		Logger:       logger,
+		InputDir:               inputDir,
+		OutputDir:              outputDir,
+		ShowProgress:           !migrateDryRun,
+		DryRun:                 migrateDryRun,
+		ClassifyByUploadFolder: migrateClassifyByUpload,
+		Logger:                 logger,
 	})
 	if err != nil {
 		return err
