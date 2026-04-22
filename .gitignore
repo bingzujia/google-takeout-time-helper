@@ -1,0 +1,25 @@
+/Takeout/
+/input/
+/inputdir/
+/openspec-templates/
+/.idea/
+/.codebuddy/
+/output/
+/bin/
+/gtoh
+/test_matcher
+/openspec/
+/output_bk/
+/test/
+*.test
+/.github/skills/
+/.github/prompts/
+copilot-session-*.md
+
+# KLD SDD AI 编辑器个人配置（请勿提交）
+.cursor/commands/personal-*
+.claude/commands/personal-*
+.codebuddy/commands/personal-*
+.qoder/commands/personal-*
+.kunlunzhima/commands/personal-*
+.workbuddy/commands/personal-*

@@ -1,0 +1,109 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/bingzujia/google-takeout-time-helper/internal/logutil"
+	"github.com/bingzujia/google-takeout-time-helper/internal/migrator"
+	"github.com/spf13/cobra"
+)
+
+var migrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Migrate Google Takeout photos with file timestamps",
+	Long: `Migrate photos from Google Takeout to a clean directory structure.
+
+Scans year folders (Photos from XXXX) in the input directory, copies files to
+the output directory, and sets file modification times from JSON sidecar
+timestamps via os.Chtimes() (cross-platform, no external tools required).
+
+Supports two classification modes:
+- Default (time-based): Organizes files by year (Photos_from_2024/, Photos_from_2023/, etc.)
+- Device-based (--classify-by-uploadFolder): Organizes files by device under classify-by-uploadFolder/
+
+Generates SHA-256-based metadata JSON files and a
+takeout-helper-log/migrate-{date}-{index}.log with per-file decisions.`,
+	Args: cobra.NoArgs,
+	RunE: runMigrate,
+}
+
+var (
+	migrateDryRun            bool
+	migrateInputDir          string
+	migrateOutputDir         string
+	migrateClassifyByUpload  bool
+)
+
+func init() {
+	migrateCmd.Flags().BoolVar(&migrateDryRun, "dry-run", false, "preview migration without modifying files")
+	migrateCmd.Flags().StringVar(&migrateInputDir, "input-dir", "", "input directory containing Google Takeout exports")
+	migrateCmd.Flags().StringVar(&migrateOutputDir, "output-dir", "", "output directory for organized photos")
+	migrateCmd.Flags().BoolVar(&migrateClassifyByUpload, "classify-by-uploadFolder", false, "organize files by device (localFolderName) instead of year folders")
+	_ = migrateCmd.MarkFlagRequired("input-dir")
+	_ = migrateCmd.MarkFlagRequired("output-dir")
+	rootCmd.AddCommand(migrateCmd)
+}
+
+func runMigrate(_ *cobra.Command, _ []string) error {
+	inputDir := migrateInputDir
+	outputDir := migrateOutputDir
+
+	// Validate input directory
+	if _, err := os.Stat(inputDir); os.IsNotExist(err) {
+		return fmt.Errorf("input directory does not exist: %s", inputDir)
+	}
+
+	fmt.Printf("Input:  %s\n", inputDir)
+	fmt.Printf("Output: %s\n", outputDir)
+
+	classifyMode := "by year (Photos_from_YYYY)"
+	if migrateClassifyByUpload {
+		classifyMode = "by device (localFolderName)"
+	}
+	fmt.Printf("Classification: %s\n", classifyMode)
+
+	if migrateDryRun {
+		fmt.Println("\nDry-run mode — no files will be modified")
+	} else {
+		fmt.Println()
+	}
+
+	logger, err := logutil.OpenLog(outputDir, "migrate", migrateDryRun)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
+	}
+	defer logger.Close()
+
+	stats, err := migrator.Run(migrator.Config{
+		InputDir:               inputDir,
+		OutputDir:              outputDir,
+		ShowProgress:           !migrateDryRun,
+		DryRun:                 migrateDryRun,
+		ClassifyByUploadFolder: migrateClassifyByUpload,
+		Logger:                 logger,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Print summary
+	fmt.Println()
+	if migrateDryRun {
+		fmt.Println("Dry-run complete! (no files were modified)")
+	} else {
+		fmt.Println("Processing complete!")
+	}
+	fmt.Printf("  Scanned:            %d files\n", stats.Scanned)
+	fmt.Printf("  Processed:          %d files\n", stats.Processed)
+	fmt.Printf("  Skipped (exists):   %d files\n", stats.SkippedExists)
+	fmt.Printf("  Failed (other):     %d files\n", stats.FailedOther)
+	fmt.Printf("  Manual review:      %d files\n", stats.ManualReview)
+	if migrateDryRun {
+		fmt.Println("  Log:                (not created in dry-run)")
+	} else {
+		fmt.Printf("  Log:                %s\n", logger.Path())
+	}
+
+	return nil
+}
